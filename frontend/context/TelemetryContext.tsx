@@ -69,6 +69,7 @@ interface TelemetryContextType {
   // Simulation Running State
   isSimRunning: boolean;
   toggleSimRunning: () => void;
+  simulationLinked: boolean;
 
   // Hardware / Pi 5 stats
   cpuTemp: number;
@@ -110,6 +111,17 @@ const INITIAL_ZONES: ProximitySensorZone[] = [
   { id: 'z7', zone: 'Rear Right Clearance', direction: 'Rear Right', sensorType: 'IR Optical Array', distance: 2.95, minClearance: 0.3, maxRange: 4.0, obstacleDetected: false, threatLevel: 'SAFE', lastTriggerTime: '00:00:52' },
   { id: 'z8', zone: 'Rear Center', direction: 'Rear Center', sensorType: 'Ultrasonic Transceiver', distance: 5.00, minClearance: 0.5, maxRange: 6.0, obstacleDetected: false, threatLevel: 'CLEAR', lastTriggerTime: '00:02:10' },
 ];
+
+const ZONE_SECTOR_MAP: Record<string, string> = {
+  'Front Center': 'front',
+  'Front Left': 'frontLeft',
+  'Front Right': 'frontRight',
+  'Side Left': 'left',
+  'Side Right': 'right',
+  'Rear Left': 'rearLeft',
+  'Rear Right': 'rearRight',
+  'Rear Center': 'rear',
+};
 
 const generateSeedHistory = (): TelemetryDataPoint[] => {
   const points: TelemetryDataPoint[] = [];
@@ -227,6 +239,7 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return localStorage.getItem('pravah_daylight_mode') === 'true';
   });
   const [isSimRunning, setIsSimRunning] = useState<boolean>(true);
+  const [simulationLinked, setSimulationLinked] = useState<boolean>(false);
   const [glareDetected, setGlareDetected] = useState<boolean>(false);
 
   // Sync Daylight Mode with HTML class & storage
@@ -285,10 +298,16 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const telemetryChannelRef = useRef<BroadcastChannel | null>(null);
   const weatherChannelRef = useRef<BroadcastChannel | null>(null);
+  const controlChannelRef = useRef<BroadcastChannel | null>(null);
   const lastAlarmTimeRef = useRef<number>(0);
   const lastHazardAckRef = useRef<number>(0);
   const lastSimMessageTimeRef = useRef<number>(0);
   const telemetryStateRef = useRef<any>({});
+  const killSwitchRef = useRef<boolean>(false);
+  const settingsRef = useRef<AdasSettings | null>(null);
+  const modalOpenRef = useRef<boolean>(false);
+  const prevAebRef = useRef<boolean>(false);
+  const lastSimAebLogRef = useRef<number>(0);
 
   // Helper to add event logs
   const addEventLog = useCallback((log: Omit<DiagnosticEventLog, 'id'>) => {
@@ -313,6 +332,7 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setRainLevelState(val);
     localStorage.setItem('adas_rain', val.toString());
     weatherChannelRef.current?.postMessage({ rainLevel: val });
+    try { controlChannelRef.current?.postMessage({ type: 'weather', rainLevel: val }); } catch { /* ignore */ }
   }, []);
 
   const setFogLevel = useCallback((lvl: number) => {
@@ -320,35 +340,52 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setFogLevelState(val);
     localStorage.setItem('adas_fog', val.toString());
     weatherChannelRef.current?.postMessage({ fogLevel: val });
+    try { controlChannelRef.current?.postMessage({ type: 'weather', fogLevel: val }); } catch { /* ignore */ }
   }, []);
 
   const toggleNightMode = useCallback(() => {
-    setNightMode(prev => !prev);
-  }, []);
+    // Compute from the current value outside the updater: side effects inside a
+    // state updater run twice under React StrictMode and toggle straight back.
+    const next = !nightMode;
+    setNightMode(next);
+    try { controlChannelRef.current?.postMessage({ type: 'night', enabled: next }); } catch { /* ignore */ }
+  }, [nightMode]);
 
   const toggleDaylightMode = useCallback(() => {
     setDaylightMode(prev => !prev);
   }, []);
 
   const toggleSimRunning = useCallback(() => {
-    setIsSimRunning(prev => {
-      const next = !prev;
-      try {
-        fetch('/api/simulation/state', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ running: next }),
-        }).catch(() => {});
-      } catch {
-        // ignore
-      }
-      return next;
-    });
-  }, []);
+    const next = !isSimRunning;
+    setIsSimRunning(next);
+    try { controlChannelRef.current?.postMessage({ type: 'pause', paused: !next }); } catch { /* ignore */ }
+    try {
+      fetch('/api/simulation/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ running: next }),
+      }).catch(() => {});
+    } catch {
+      // ignore
+    }
+  }, [isSimRunning]);
 
   const updateSettings = useCallback((newSettings: Partial<AdasSettings>) => {
     setSettings(prev => ({ ...prev, ...newSettings }));
   }, []);
+
+  // Push ADAS configuration into the 3D simulator
+  useEffect(() => {
+    try {
+      controlChannelRef.current?.postMessage({
+        type: 'config',
+        aebThreshold: settings.aebThresholdMeters,
+        antiGlare: settings.antiGlareShieldAuto,
+      });
+    } catch {
+      // ignore
+    }
+  }, [settings.aebThresholdMeters, settings.antiGlareShieldAuto]);
 
   // Emergency actions
   const triggerManualAEB = useCallback(() => {
@@ -356,6 +393,7 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setSpeed(0);
     setServoAngle(90); // 90° Emergency Brake servo position
     setFcwState('FCW: EMERGENCY BRAKING OVERRIDE (AEB)');
+    try { controlChannelRef.current?.postMessage({ type: 'aeb', active: true }); } catch { /* ignore */ }
     audioSynth.playEmergencyAlarm();
     if (settings.voiceAlertsEnabled) {
       audioSynth.speakAlert('Emergency Brake Applied!');
@@ -373,6 +411,7 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setAebActive(false);
     setServoAngle(0);
     setFcwState('FCW: SYSTEM NOMINAL');
+    try { controlChannelRef.current?.postMessage({ type: 'aeb', active: false }); } catch { /* ignore */ }
     addEventLog({
       timestamp: new Date().toLocaleTimeString(),
       severity: 'INFO',
@@ -383,32 +422,31 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [addEventLog]);
 
   const toggleKillSwitch = useCallback(() => {
-    setKillSwitchActive(prev => {
-      const next = !prev;
-      if (next) {
-        setSpeed(0);
-        setAebActive(true);
-        setServoAngle(90);
-        audioSynth.playEmergencyAlarm();
-        addEventLog({
-          timestamp: new Date().toLocaleTimeString(),
-          severity: 'CRITICAL',
-          category: 'SYSTEM',
-          message: 'EMERGENCY KILL SWITCH ENGAGED. All vehicle actuators locked in safe state.',
-        });
-      } else {
-        setAebActive(false);
-        setServoAngle(0);
-        addEventLog({
-          timestamp: new Date().toLocaleTimeString(),
-          severity: 'INFO',
-          category: 'SYSTEM',
-          message: 'Emergency Kill Switch disengaged. System returning to standby.',
-        });
-      }
-      return next;
-    });
-  }, [addEventLog]);
+    const next = !killSwitchActive;
+    setKillSwitchActive(next);
+    try { controlChannelRef.current?.postMessage({ type: 'kill', active: next }); } catch { /* ignore */ }
+    if (next) {
+      setSpeed(0);
+      setAebActive(true);
+      setServoAngle(90);
+      audioSynth.playEmergencyAlarm();
+      addEventLog({
+        timestamp: new Date().toLocaleTimeString(),
+        severity: 'CRITICAL',
+        category: 'SYSTEM',
+        message: 'EMERGENCY KILL SWITCH ENGAGED. All vehicle actuators locked in safe state.',
+      });
+    } else {
+      setAebActive(false);
+      setServoAngle(0);
+      addEventLog({
+        timestamp: new Date().toLocaleTimeString(),
+        severity: 'INFO',
+        category: 'SYSTEM',
+        message: 'Emergency Kill Switch disengaged. System returning to standby.',
+      });
+    }
+  }, [addEventLog, killSwitchActive]);
 
   const testPiezoBeep = useCallback(() => {
     audioSynth.playPiezoBeep(settings.piezoFrequency, 180, settings.piezoVolume / 100);
@@ -423,48 +461,145 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     lastHazardAckRef.current = Date.now();
   }, []);
 
+  // Apply a live telemetry frame from the embedded 3D ADAS world simulation
+  const applySimFrame = useCallback((d: any) => {
+    if (!d || typeof d !== 'object') return;
+    if (d.instance === 'modal' && !modalOpenRef.current) return;
+    if (d.instance === 'embedded' && modalOpenRef.current) return;
+
+    lastSimMessageTimeRef.current = Date.now();
+    setSimulationLinked(true);
+    if (killSwitchRef.current) return;
+
+    const clampNum = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+    const frameSpeed = typeof d.speed === 'number' ? d.speed : 0;
+    const frameSteer = typeof d.steer === 'number' ? d.steer : 0;
+    const frameHeading = typeof d.heading === 'number' ? d.heading : 0;
+    const frameGear: 'P' | 'R' | 'N' | 'D' =
+      d.gear === 'P' ? 'P' : d.gear === 'R' ? 'R' : d.gear === 'N' ? 'N' : 'D';
+
+    setSpeed(prev => (Math.abs(prev - frameSpeed) < 0.15 ? prev : Number(frameSpeed.toFixed(1))));
+    setSteerAngle(prev => (Math.abs(prev - frameSteer) < 0.5 ? prev : frameSteer));
+    setGear(prev => (prev === frameGear ? prev : frameGear));
+    setHeading(prev => {
+      const next = Number(((frameHeading % 360) + 360) % 360);
+      return Math.abs(prev - next) < 0.4 ? prev : next;
+    });
+
+    const sectors = (d.sectors || {}) as Record<string, number>;
+    const rawFront = typeof sectors.front === 'number' ? sectors.front : typeof d.minDistance === 'number' ? d.minDistance : 50;
+    const frontDistance = Number(clampNum(rawFront, 0, 12).toFixed(2));
+    setLidarDistance(prev => (Math.abs(prev - frontDistance) < 0.03 ? prev : frontDistance));
+
+    // Directional proximity zones follow the simulation LiDAR sectors
+    setProximityZones(prev => prev.map(zone => {
+      const raw = sectors[ZONE_SECTOR_MAP[zone.direction]];
+      if (typeof raw !== 'number') return zone;
+      const maxRange = zone.maxRange || 5;
+      const distance = Number(clampNum(raw, 0.05, maxRange).toFixed(2));
+      const ratio = distance / maxRange;
+      let threatLevel: ThreatLevel;
+      if (ratio < 0.18) threatLevel = 'CRITICAL';
+      else if (ratio < 0.35) threatLevel = 'WARNING';
+      else if (ratio < 0.6) threatLevel = 'CAUTION';
+      else if (ratio >= 0.999) threatLevel = 'CLEAR';
+      else threatLevel = 'SAFE';
+      const triggered = threatLevel === 'CRITICAL' || threatLevel === 'WARNING';
+      return {
+        ...zone,
+        distance,
+        obstacleDetected: triggered,
+        threatLevel,
+        lastTriggerTime: triggered
+          ? new Date().toLocaleTimeString('en-US', { hour12: false })
+          : zone.lastTriggerTime,
+      };
+    }));
+
+    // AI perception detections are streamed directly from the simulated scene
+    if (Array.isArray(d.detections)) {
+      const mapped: DetectedObject[] = d.detections.slice(0, 8).map((o: any, index: number) => ({
+        id: typeof o.id === 'string' ? o.id : `sim-obj-${index}`,
+        type: o.type === 'PEDESTRIAN' ? 'PEDESTRIAN' : o.type === 'POTHOLE' ? 'POTHOLE' : o.type === 'TRAFFIC_SIGN' ? 'TRAFFIC_SIGN' : 'VEHICLE',
+        label: typeof o.label === 'string' ? o.label : 'OBJECT',
+        confidence: clampNum(Number(o.confidence) || 90, 0, 100),
+        distance: Math.max(0, Number(o.distance) || 0),
+        x: clampNum(Number(o.x) || 50, 0, 100),
+        y: clampNum(Number(o.y) || 50, 0, 100),
+        width: clampNum(Number(o.width) || 40, 4, 200),
+        height: clampNum(Number(o.height) || 40, 4, 200),
+        velocity: Number(o.velocity) || 0,
+      }));
+      setDetectedObjects(mapped);
+    }
+
+    const aebNow = !!d.aebActive;
+    setAebActive(aebNow);
+    if (typeof d.fcwState === 'string') setFcwState(d.fcwState);
+    if (typeof d.servoAngle === 'number') setServoAngle(clampNum(d.servoAngle, 0, 90));
+    // Weather and night mode are site-controlled; they flow to the simulator via
+    // the control channel and are echoed back through adas_weather_channel.
+    setGlareDetected(!!d.glareDetected);
+    setAgsActive(!!d.agsActive);
+
+    if (d.imu && typeof d.imu === 'object') {
+      setImu({
+        ax: Number(d.imu.ax) || 0,
+        ay: Number(d.imu.ay) || 0,
+        az: Number(d.imu.az) || 0.99,
+        gx: Number(d.imu.gx) || 0,
+        gy: Number(d.imu.gy) || 0,
+        gz: Number(d.imu.gz) || 0,
+      });
+    }
+    if (d.gps && typeof d.gps === 'object') {
+      setGps({
+        lat: Number(d.gps.lat) || 28.6139,
+        lng: Number(d.gps.lng) || 77.209,
+        satellites: Number(d.gps.satellites) || 14,
+        alt: Number(d.gps.alt) || 216,
+        fix: d.gps.fix !== false,
+      });
+    }
+
+    const activeSettings = settingsRef.current;
+    if (activeSettings) {
+      setLkaActive(activeSettings.lkaEnabled && Math.abs(frameSteer) < activeSettings.lkaDriftThresholdDeg);
+      setAccActive(activeSettings.accEnabled && frameSpeed > 2);
+    }
+
+    // Announce automatic emergency braking transitions once
+    if (aebNow && !prevAebRef.current && Date.now() - lastSimAebLogRef.current > 3000) {
+      lastSimAebLogRef.current = Date.now();
+      audioSynth.playEmergencyAlarm();
+      if (settingsRef.current?.voiceAlertsEnabled) {
+        audioSynth.speakAlert('Warning: Critical Distance! Emergency Brake Applied!');
+      }
+      addEventLog({
+        timestamp: new Date().toLocaleTimeString(),
+        severity: 'CRITICAL',
+        category: 'AEB',
+        message: `3D SIMULATION: Forward obstacle inside ${frontDistance}m. Automated emergency braking engaged.`,
+        metricValue: `Distance: ${frontDistance}m | Speed: ${Math.round(frameSpeed)} km/h`,
+      });
+    }
+    prevAebRef.current = aebNow;
+  }, [addEventLog]);
+
   // BroadcastChannel Setup for inter-tab / simulator synchronization
   useEffect(() => {
     try {
       const tChannel = new BroadcastChannel('adas_telemetry_channel');
       const wChannel = new BroadcastChannel('adas_weather_channel');
+      const cChannel = new BroadcastChannel('adas_control_channel');
 
       telemetryChannelRef.current = tChannel;
       weatherChannelRef.current = wChannel;
+      controlChannelRef.current = cChannel;
 
       tChannel.onmessage = (event) => {
-        if (!event || !event.data || killSwitchActive) return;
-        lastSimMessageTimeRef.current = Date.now();
-        const d = event.data;
-
-        if (d.speed !== undefined) {
-          const s = Math.round(Math.abs(d.speed));
-          setSpeed(prev => (prev === s ? prev : s));
-        }
-        if (d.steer !== undefined) {
-          const st = Number(d.steer);
-          setSteerAngle(prev => (Math.abs(prev - st) < 0.5 ? prev : st));
-        }
-        if (d.gear !== undefined) {
-          setGear(prev => (prev === d.gear ? prev : d.gear));
-        }
-        if (d.minDistance !== undefined) {
-          const mDist = parseFloat(d.minDistance);
-          setLidarDistance(prev => (Math.abs(prev - mDist) < 0.05 ? prev : mDist));
-        }
-        if (d.aebActive !== undefined) {
-          setAebActive(prev => (prev === d.aebActive ? prev : d.aebActive));
-        }
-        if (d.fcwState !== undefined) {
-          setFcwState(prev => (prev === d.fcwState ? prev : d.fcwState));
-        }
-
-        if (d.rainLevel !== undefined) {
-          setRainLevelState(prev => (prev === d.rainLevel ? prev : d.rainLevel));
-        }
-        if (d.fogLevel !== undefined) {
-          setFogLevelState(prev => (prev === d.fogLevel ? prev : d.fogLevel));
-        }
+        if (!event || !event.data) return;
+        applySimFrame(event.data);
       };
 
       wChannel.onmessage = (event) => {
@@ -473,14 +608,27 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         if (event.data.fogLevel !== undefined) setFogLevelState(event.data.fogLevel);
       };
 
+      cChannel.onmessage = (event) => {
+        const d = event?.data;
+        if (!d || typeof d !== 'object') return;
+        // Night toggled from inside the simulator UI (fullscreen view)
+        if (d.type === 'nightState' && typeof d.enabled === 'boolean') {
+          setNightMode(prev => (prev === d.enabled ? prev : d.enabled));
+        }
+      };
+
       return () => {
         tChannel.close();
         wChannel.close();
+        cChannel.close();
+        telemetryChannelRef.current = null;
+        weatherChannelRef.current = null;
+        controlChannelRef.current = null;
       };
     } catch {
       // fallback
     }
-  }, [killSwitchActive]);
+  }, [applySimFrame]);
 
   // Derived environmental metrics
   const rainRate = Number((rainLevel * 9.2).toFixed(1)); // mm/h
@@ -492,8 +640,9 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const frictionMu = Number(Math.max(0.18, 0.85 - (roadWetness * 0.0062)).toFixed(2));
   const hydroplaningRisk = roadWetness > 65 && speed > 50 ? 'HIGH' : roadWetness > 35 && speed > 40 ? 'MEDIUM' : 'LOW';
 
-  // Anti-glare check
+  // Anti-glare check (fallback only when the 3D simulation is not streaming)
   useEffect(() => {
+    if (Date.now() - lastSimMessageTimeRef.current < 2500) return;
     if (nightMode && settings.antiGlareShieldAuto) {
       // If oncoming vehicles present at night
       const oncoming = detectedObjects.some(o => o.type === 'VEHICLE' && o.distance < 25);
@@ -535,6 +684,10 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     isSimRunning
   };
 
+  killSwitchRef.current = killSwitchActive;
+  settingsRef.current = settings;
+  modalOpenRef.current = simulatorModalOpen;
+
   // Main simulation tick loop running stably every 1000ms
   useEffect(() => {
     if (connectionMode === 'OFFLINE') return;
@@ -544,6 +697,7 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       const st = telemetryStateRef.current;
       const isSimActive = (Date.now() - lastSimMessageTimeRef.current) < 2500;
+      setSimulationLinked(isSimActive);
 
       // In simulation or online mode, smoothly fluctuate real-world parameters
       if (!killSwitchActive) {
@@ -602,48 +756,50 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setRamUsage(Number((41 + (Math.random() * 2)).toFixed(1)));
         setLatencyMs(Math.round(10 + Math.random() * 5));
 
-        // Update 360° Proximity Zones
-        setProximityZones(prev => prev.map(zone => {
-          let dist = zone.distance;
-          let threat: ThreatLevel = 'SAFE';
+        // Update 360° Proximity Zones (mock fallback only when no live 3D simulation)
+        if (!isSimActive) {
+          setProximityZones(prev => prev.map(zone => {
+            let dist = zone.distance;
+            let threat: ThreatLevel = 'SAFE';
 
-          if (zone.id === 'z1') {
-            dist = st.lidarDistance;
-            if (dist < 1.0) threat = 'CRITICAL';
-            else if (dist < 2.0) threat = 'WARNING';
-            else if (dist < 4.0) threat = 'CAUTION';
-            else threat = 'CLEAR';
-          } else {
-            const delta = (Math.random() - 0.5) * 0.15;
-            dist = Math.max(zone.minClearance, Math.min(zone.maxRange, Number((dist + delta).toFixed(2))));
-            if (dist < 0.9) threat = 'WARNING';
-            else if (dist < 1.8) threat = 'CAUTION';
-            else threat = 'SAFE';
-          }
+            if (zone.id === 'z1') {
+              dist = st.lidarDistance;
+              if (dist < 1.0) threat = 'CRITICAL';
+              else if (dist < 2.0) threat = 'WARNING';
+              else if (dist < 4.0) threat = 'CAUTION';
+              else threat = 'CLEAR';
+            } else {
+              const delta = (Math.random() - 0.5) * 0.15;
+              dist = Math.max(zone.minClearance, Math.min(zone.maxRange, Number((dist + delta).toFixed(2))));
+              if (dist < 0.9) threat = 'WARNING';
+              else if (dist < 1.8) threat = 'CAUTION';
+              else threat = 'SAFE';
+            }
 
-          return {
-            ...zone,
-            distance: dist,
-            obstacleDetected: threat !== 'CLEAR' && threat !== 'SAFE',
-            threatLevel: threat,
-            lastTriggerTime: threat === 'CRITICAL' || threat === 'WARNING' ? '00:00:01' : zone.lastTriggerTime,
-          };
-        }));
+            return {
+              ...zone,
+              distance: dist,
+              obstacleDetected: threat !== 'CLEAR' && threat !== 'SAFE',
+              threatLevel: threat,
+              lastTriggerTime: threat === 'CRITICAL' || threat === 'WARNING' ? '00:00:01' : zone.lastTriggerTime,
+            };
+          }));
 
-        // Dynamic Objects movement in camera
-        setDetectedObjects(prev => prev.map(obj => {
-          let newDist = obj.distance;
-          if (obj.type === 'VEHICLE') {
-            newDist = Math.max(3.2, Number((obj.distance + (Math.random() * 0.8 - 0.4)).toFixed(1)));
-          } else if (obj.type === 'PEDESTRIAN') {
-            newDist = Math.max(2.5, Number((obj.distance + (Math.random() * 0.4 - 0.2)).toFixed(1)));
-          }
-          return {
-            ...obj,
-            distance: newDist,
-            confidence: Math.min(99, Math.max(82, Math.round(obj.confidence + (Math.random() * 2 - 1)))),
-          };
-        }));
+          // Dynamic Objects movement in camera
+          setDetectedObjects(prev => prev.map(obj => {
+            let newDist = obj.distance;
+            if (obj.type === 'VEHICLE') {
+              newDist = Math.max(3.2, Number((obj.distance + (Math.random() * 0.8 - 0.4)).toFixed(1)));
+            } else if (obj.type === 'PEDESTRIAN') {
+              newDist = Math.max(2.5, Number((obj.distance + (Math.random() * 0.4 - 0.2)).toFixed(1)));
+            }
+            return {
+              ...obj,
+              distance: newDist,
+              confidence: Math.min(99, Math.max(82, Math.round(obj.confidence + (Math.random() * 2 - 1)))),
+            };
+          }));
+        }
 
         // FCW and AEB threat logic evaluation if not in real 3D sim override
         if (!isSimActive) {
@@ -808,6 +964,7 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         toggleDaylightMode,
         isSimRunning,
         toggleSimRunning,
+        simulationLinked,
 
         cpuTemp,
         cpuLoad,

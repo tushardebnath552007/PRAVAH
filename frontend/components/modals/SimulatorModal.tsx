@@ -1,20 +1,18 @@
 import React, { useState } from 'react';
-import { X, Car, ExternalLink, Radio, Maximize2, ShieldAlert, ShieldCheck } from 'lucide-react';
+import { X, Car, ExternalLink } from 'lucide-react';
 import { useTelemetry } from '../../context/TelemetryContext';
 import { Custom3dSimulation } from '../simulation/Custom3dSimulation';
+import { AdasWorldSimulation } from '../simulation/AdasWorldSimulation';
 
 export const SimulatorModal: React.FC = () => {
   const { 
     simulatorModalOpen, 
     setSimulatorModalOpen, 
     speed, 
-    lidarDistance, 
-    aebActive,
-    triggerManualAEB,
-    releaseAEB
+    lidarDistance
   } = useTelemetry();
 
-  const [simEngine, setSimEngine] = useState<'custom-3d' | 'highway-drive'>('custom-3d');
+  const [simEngine, setSimEngine] = useState<'custom-3d' | 'adas-world'>('adas-world');
 
   if (!simulatorModalOpen) return null;
 
@@ -39,6 +37,16 @@ export const SimulatorModal: React.FC = () => {
           <div className="flex items-center gap-2">
             <div className="flex items-center p-1 rounded-lg bg-slate-900 border border-slate-800 text-[11px] font-display">
               <button
+                onClick={() => setSimEngine('adas-world')}
+                className={`px-3 py-1 rounded-md transition-all font-bold ${
+                  simEngine === 'adas-world'
+                    ? 'bg-cyan-500 text-slate-950 shadow-md'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                3D ADAS WORLD (LIVE)
+              </button>
+              <button
                 onClick={() => setSimEngine('custom-3d')}
                 className={`px-3 py-1 rounded-md transition-all font-bold ${
                   simEngine === 'custom-3d'
@@ -46,22 +54,12 @@ export const SimulatorModal: React.FC = () => {
                     : 'text-slate-400 hover:text-white'
                 }`}
               >
-                CUSTOM 3D DIGITAL TWIN
-              </button>
-              <button
-                onClick={() => setSimEngine('highway-drive')}
-                className={`px-3 py-1 rounded-md transition-all font-bold ${
-                  simEngine === 'highway-drive'
-                    ? 'bg-cyan-500 text-slate-950 shadow-md'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                INTERACTIVE HIGHWAY DRIVE
+                DIGITAL TWIN
               </button>
             </div>
 
             <a
-              href="/assets/aistudio/GRAPHICS_1e693f54.HTML"
+              href="/assets/simulation/adas-world.html"
               target="_blank"
               rel="noreferrer"
               title="Open Simulator in Standalone Browser Window"
@@ -81,29 +79,26 @@ export const SimulatorModal: React.FC = () => {
 
         {/* Simulator Container */}
         <div className="flex-1 w-full relative bg-slate-950 overflow-hidden">
-          {simEngine === 'custom-3d' ? (
+          {simEngine === 'adas-world' ? (
+            <div className="w-full h-full p-2">
+              <AdasWorldSimulation height="100%" embed={false} instance="modal" allowFullscreen={false} />
+            </div>
+          ) : (
             <div className="w-full h-full p-2">
               <Custom3dSimulation height="100%" />
             </div>
-          ) : (
-            <iframe
-              src="/assets/aistudio/GRAPHICS_1e693f54.HTML"
-              title="Interactive 3D Autonomous Driving"
-              className="w-full h-full border-0"
-              allow="accelerometer; autoplay; encrypted-media; gyroscope"
-            />
           )}
         </div>
 
         {/* User-Friendly Footer Bar */}
         <div className="px-4 py-2.5 bg-slate-950 border-t border-slate-800 flex flex-wrap items-center justify-between text-[11px] font-sans text-slate-400 gap-2">
           <div className="flex items-center gap-3">
-            <span><strong>Camera Views:</strong> Switch between Chase, Cockpit, Overhead Drone, or Orbit (360° click & drag)</span>
+            <span><strong>Drive:</strong> W / A / S / D or Arrow Keys · Space to brake (click the viewport first)</span>
             <span>·</span>
-            <span><strong>Hover:</strong> Move your mouse over car or obstacles for live distance & speed tooltips</span>
+            <span><strong>Camera:</strong> keys 1 / 2 or the CHASE / ORBIT buttons</span>
           </div>
           <div className="font-mono text-cyan-400 font-bold">
-            SPEED: {speed} KM/H · OBSTACLE: {lidarDistance.toFixed(2)}M
+            SPEED: {Math.round(speed)} KM/H · OBSTACLE: {lidarDistance.toFixed(2)}M
           </div>
         </div>
       </div>

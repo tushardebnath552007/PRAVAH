@@ -79,8 +79,12 @@ const DashboardContent: React.FC = () => {
         <TopHeader />
 
         {/* Dynamic View Container */}
-        <main className="flex-1 pb-12 overflow-y-auto">
-          {renderActiveView()}
+        <main className="flex-1 pb-12 overflow-y-auto relative">
+          {/* Command Center stays mounted so the 3D world keeps driving telemetry on other tabs */}
+          <div className={activeTab === 'command-center' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'command-center'}>
+            <CommandCenterView />
+          </div>
+          {activeTab !== 'command-center' && renderActiveView()}
         </main>
 
         {/* Pinned Bottom Telemetry Micro-Ribbon */}

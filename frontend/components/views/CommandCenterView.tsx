@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 import { useTelemetry } from '../../context/TelemetryContext';
 import { RadarSurroundingsViewport } from '../radar/RadarSurroundingsViewport';
-import { Custom3dSimulation } from '../simulation/Custom3dSimulation';
+import { AdasWorldSimulation } from '../simulation/AdasWorldSimulation';
 
 export const CommandCenterView: React.FC = () => {
   const { 
@@ -407,7 +407,7 @@ export const CommandCenterView: React.FC = () => {
               }`}
             >
               <Car className="w-4 h-4" />
-              <span>CUSTOM 3D SIMULATION (DIGITAL TWIN)</span>
+              <span>3D ADAS WORLD SIMULATION</span>
             </button>
 
             <button
@@ -427,8 +427,8 @@ export const CommandCenterView: React.FC = () => {
         {/* View Content: Custom 3D Simulation OR 2D Radar + Telemetry Stream */}
         {activeCenterpiece === '3d-sim' ? (
           <div className="space-y-4">
-            {/* Embedded Native Three.js Custom 3D Simulation with Raycasting Hover */}
-            <Custom3dSimulation height="560px" />
+            {/* Live Three.js ADAS world — drives every telemetry parameter on the site */}
+            <AdasWorldSimulation height="620px" />
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
