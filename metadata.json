@@ -1,0 +1,6 @@
+{
+  "name": "PRAVAH – ADAS Telemetry Hub",
+  "description": "Predictive Road Awareness & Vehicle Assistance Hub: Automotive ADAS control center with real-time Pi 5 telemetry, AI vision, multi-sensor data streams, 360° proximity matrix, and weather diagnostics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

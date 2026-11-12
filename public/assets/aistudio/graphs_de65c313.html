@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ADAS Sensor Analytics & Telemetry Graphs</title>
+    <!-- Chart.js for high-performance real-time plotting -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-dark: #0b0f19;
+            --card-bg: rgba(30, 41, 59, 0.5);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --text-main: #f8fafc;
+            --text-muted: #64748b;
+            --accent-blue: #38bdf8;
+            --accent-green: #4ade80;
+            --accent-red: #f87171;
+            --accent-purple: #c084fc;
+            --accent-orange: #fbbf24;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: var(--bg-dark);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: var(--text-main);
+            overflow-x: hidden;
+        }
+
+        /* Top Navigation Bar */
+        #top-navbar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 50px;
+            background: rgba(11, 15, 25, 0.95);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            align-items: center;
+            padding: 0 24px;
+            box-sizing: border-box;
+            z-index: 100;
+        }
+
+        #top-navbar .nav-links {
+            display: flex;
+            gap: 20px;
+        }
+
+        #top-navbar .nav-item {
+            color: #94a3b8;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: color 0.2s ease;
+        }
+
+        #top-navbar .nav-item:hover,
+        #top-navbar .nav-item.active {
+            color: var(--accent-blue);
+        }
+
+        /* Layout Container */
+        .container {
+            margin-top: 70px;
+            padding: 24px;
+            max-width: 1600px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .header-panel {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(30, 41, 59, 0.6);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 24px;
+        }
+
+        .header-panel h1 {
+            margin: 0;
+            font-size: 20px;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            color: var(--accent-blue);
+        }
+
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            font-weight: 700;
+            background: rgba(0,0,0,0.3);
+            padding: 6px 12px;
+            border-radius: 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .led-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #64748b;
+        }
+
+        .led-dot.active {
+            background: var(--accent-green);
+            box-shadow: 0 0 10px var(--accent-green);
+        }
+
+        /* Section Header */
+        .section-header {
+            font-size: 14px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #cbd5e1;
+            margin: 28px 0 16px 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .section-header::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        /* Chart Grid Layout */
+        .chart-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+            gap: 20px;
+            margin-bottom: 24px;
+        }
+
+        .chart-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+            position: relative;
+        }
+
+        .chart-title {
+            font-size: 12px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #94a3b8;
+            margin-bottom: 4px;
+        }
+
+        .chart-subtitle {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-bottom: 16px;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 250px;
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Top Navigation -->
+    <nav id="top-navbar">
+        <div class="nav-links">
+            <a href="index.html" class="nav-item">Simulator</a>
+            <a href="data.html" class="nav-item">Data</a>
+            <a href="graph.html" class="nav-item active">Graph</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- Header -->
+        <div class="header-panel">
+            <div>
+                <h1>ADAS Sensor Framework Analytics</h1>
+                <div style="font-size: 12px; color: #64748b; margin-top: 4px;">
+                    Real-time visual diagnostic pipeline connected via <code>adas_telemetry_channel</code>
+                </div>
+            </div>
+            <div class="status-badge">
+                <div id="connection-led" class="led-dot"></div>
+                <span id="connection-status">DRIVE CAR IN SIMULATOR TO RECORD GRAPHS</span>
+            </div>
+        </div>
+
+        <!-- 1. PHOTODIODE SENSORS -->
+        <div class="section-header">1. Photodiode Sensors (Optical & Ambient Light Sensing)</div>
+        <div class="chart-grid">
+            <div class="chart-card">
+                <div class="chart-title">Ambient Lux vs. Time</div>
+                <div class="chart-subtitle">Monitors environmental light transitions and glare during driving</div>
+                <div class="chart-container"><canvas id="chart-lux"></canvas></div>
+            </div>
+            <div class="chart-card">
+                <div class="chart-title">Multi-Source Light Breakdown</div>
+                <div class="chart-subtitle">Contribution from Sunlight, Headlights, Street Lamps, and Signals</div>
+                <div class="chart-container"><canvas id="chart-light-sources"></canvas></div>
+            </div>
+        </div>
+
+        <!-- 2. LIDAR SENSORS -->
+        <div class="section-header">2. LiDAR Sensors (3D Spatial Perception & Ranging)</div>
+        <div class="chart-grid">
+            <div class="chart-card">
+                <div class="chart-title">Target Range vs. Signal-to-Noise Ratio (SNR)</div>
+                <div class="chart-subtitle">Laser signal degradation over target distance under atmospheric rain/fog</div>
+                <div class="chart-container"><canvas id="chart-snr"></canvas></div>
+            </div>
+            <div class="chart-card">
+                <div class="chart-title">Point Cloud Return Intensity Distribution</div>
+                <div class="chart-subtitle">Reflectivity spectrum classifying road retroreflectors, asphalt, and obstacles</div>
+                <div class="chart-container"><canvas id="chart-reflectivity"></canvas></div>
+            </div>
+        </div>
+
+        <!-- 3. CAMERA-BASED OBJECT DETECTION -->
+        <div class="section-header">3. Camera-Based Object Detection Sensors</div>
+        <div class="chart-grid">
+            <div class="chart-card">
+                <div class="chart-title">Inference Latency & Frame Rate (FPS)</div>
+                <div class="chart-subtitle">Tracks real-time compute load (<30ms threshold for safety compliance)</div>
+                <div class="chart-container"><canvas id="chart-latency"></canvas></div>
+            </div>
+            <div class="chart-card">
+                <div class="chart-title">Precision-Recall (P-R) Curves</div>
+                <div class="chart-subtitle">Model benchmark across class categories under active driving conditions</div>
+                <div class="chart-container"><canvas id="chart-pr"></canvas></div>
+            </div>
+        </div>
+
+        <!-- 4. CAN BUS & VEHICLE TELEMETRY -->
+        <div class="section-header">4. CAN Bus Module & Vehicle Telemetry Sensors</div>
+        <div class="chart-grid">
+            <div class="chart-card">
+                <div class="chart-title">Vehicle Dynamics Multi-Axis Sync</div>
+                <div class="chart-subtitle">Synchronized Speed (km/h) and Steering Angle (°) execution</div>
+                <div class="chart-container"><canvas id="chart-dynamics"></canvas></div>
+            </div>
+            <div class="chart-card">
+                <div class="chart-title">CAN Bus Load & Frame Latency</div>
+                <div class="chart-subtitle">Network utilization % and frame delay across high-priority arbitration IDs</div>
+                <div class="chart-container"><canvas id="chart-canbus"></canvas></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Set Global Chart Defaults for Dark Theme
+        Chart.defaults.color = '#94a3b8';
+        Chart.defaults.borderColor = 'rgba(255, 255, 255, 0.05)';
+        Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+
+        const MAX_HISTORY = 30; // Max plot history points
+
+        // --- 1. Photodiode: Lux Time-Series Chart ---
+        const ctxLux = document.getElementById('chart-lux').getContext('2d');
+        const chartLux = new Chart(ctxLux, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Ambient Lux',
+                    data: [],
+                    borderColor: '#fbbf24',
+                    backgroundColor: 'rgba(251, 191, 36, 0.1)',
+                    fill: true,
+                    tension: 0.3
+                }]
+            },
+            options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } }
+        });
+
+        // --- 1. Photodiode: Light Breakdown Bar Chart ---
+        const ctxLightSources = document.getElementById('chart-light-sources').getContext('2d');
+        const chartLightSources = new Chart(ctxLightSources, {
+            type: 'bar',
+            data: {
+                labels: ['Sunlight', 'Headlights', 'Street Lamps', 'Traffic Signals'],
+                datasets: [{
+                    label: 'Contribution (Lux)',
+                    data: [0, 0, 0, 0],
+                    backgroundColor: ['#facc15', '#38bdf8', '#c084fc', '#f87171']
+                }]
+            },
+            options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } }
+        });
+
+        // --- 2. LiDAR: SNR vs Distance Scatter Chart (NOW DYNAMIC) ---
+        const ctxSNR = document.getElementById('chart-snr').getContext('2d');
+        const chartSNR = new Chart(ctxSNR, {
+            type: 'line',
+            data: {
+                labels: [5, 10, 20, 30, 40, 50, 60, 80, 100],
+                datasets: [{
+                    label: 'Laser SNR (dB)',
+                    data: [45, 42, 35, 28, 22, 18, 14, 9, 4],
+                    borderColor: '#38bdf8',
+                    backgroundColor: '#38bdf8',
+                    tension: 0.2
+                }]
+            },
+            options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, title: { display: true, text: 'SNR (dB)' } }, x: { title: { display: true, text: 'Distance (m)' } } } }
+        });
+
+        // --- 2. LiDAR: Intensity Histogram ---
+        const ctxReflectivity = document.getElementById('chart-reflectivity').getContext('2d');
+        const chartReflectivity = new Chart(ctxReflectivity, {
+            type: 'bar',
+            data: {
+                labels: ['0-20 (Asphalt)', '21-40 (Vehicle Dark)', '41-70 (Obstacles)', '71-100 (Retroreflective)'],
+                datasets: [{
+                    label: 'Point Count',
+                    data: [0, 0, 0, 0],
+                    backgroundColor: 'rgba(56, 189, 248, 0.6)'
+                }]
+            },
+            options: { responsive: true, maintainAspectRatio: false }
+        });
+
+        // --- 3. Camera: Inference Latency Chart ---
+        const ctxLatency = document.getElementById('chart-latency').getContext('2d');
+        const chartLatency = new Chart(ctxLatency, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    { label: 'Latency (ms)', data: [], borderColor: '#f87171', yAxisID: 'y' },
+                    { label: 'FPS', data: [], borderColor: '#4ade80', yAxisID: 'y1' }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: { type: 'linear', position: 'left', title: { display: true, text: 'ms' }, max: 50 },
+                    y1: { type: 'linear', position: 'right', title: { display: true, text: 'FPS' }, min: 0, max: 120, grid: { drawOnChartArea: false } }
+                }
+            }
+        });
+
+        // --- 3. Camera: Precision-Recall Curve (NOW DYNAMIC) ---
+        const ctxPR = document.getElementById('chart-pr').getContext('2d');
+        const chartPR = new Chart(ctxPR, {
+            type: 'line',
+            data: {
+                labels: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+                datasets: [
+                    { label: 'Vehicles', data: [1.0, 0.98, 0.95, 0.91, 0.84, 0.65], borderColor: '#38bdf8' },
+                    { label: 'Pedestrians', data: [1.0, 0.95, 0.90, 0.82, 0.73, 0.50], borderColor: '#f87171' }
+                ]
+            },
+            options: { responsive: true, maintainAspectRatio: false, scales: { y: { min: 0, max: 1 }, x: { title: { display: true, text: 'Recall' } } } }
+        });
+
+        // --- 4. CAN Bus: Vehicle Dynamics Sync Chart ---
+        const ctxDynamics = document.getElementById('chart-dynamics').getContext('2d');
+        const chartDynamics = new Chart(ctxDynamics, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    { label: 'Speed (km/h)', data: [], borderColor: '#38bdf8', yAxisID: 'y' },
+                    { label: 'Steering (°)', data: [], borderColor: '#c084fc', yAxisID: 'y1' }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: { type: 'linear', position: 'left', title: { display: true, text: 'km/h' } },
+                    y1: { type: 'linear', position: 'right', title: { display: true, text: 'Degrees' }, grid: { drawOnChartArea: false } }
+                }
+            }
+        });
+
+        // --- 4. CAN Bus: Bus Load & Latency ---
+        const ctxCANBus = document.getElementById('chart-canbus').getContext('2d');
+        const chartCANBus = new Chart(ctxCANBus, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Bus Utilization (%)',
+                    data: [],
+                    borderColor: '#4ade80',
+                    backgroundColor: 'rgba(74, 222, 128, 0.1)',
+                    fill: true
+                }]
+            },
+            options: { responsive: true, maintainAspectRatio: false, scales: { y: { min: 0, max: 100 } } }
+        });
+
+        // --- BroadcastChannel Telemetry Handler ---
+        const telemetryChannel = new BroadcastChannel('adas_telemetry_channel');
+        const connectionLed = document.getElementById('connection-led');
+        const connectionStatus = document.getElementById('connection-status');
+        let disconnectTimer = null;
+
+        telemetryChannel.onmessage = (event) => {
+            const data = event.data || {};
+            const speedVal = Math.round(data.speed ?? 0);
+            const steerVal = data.steer ?? 0;
+
+            // STATUS INDICATOR
+            connectionLed.classList.add('active');
+            if (speedVal > 0) {
+                connectionStatus.innerText = "RECORDING CAR DATA LIVE";
+                connectionStatus.style.color = "#4ade80";
+            } else {
+                connectionStatus.innerText = "CAR IDLE (Drive to update graph curves)";
+                connectionStatus.style.color = "#fbbf24";
+            }
+
+            clearTimeout(disconnectTimer);
+            disconnectTimer = setTimeout(() => {
+                connectionLed.classList.remove('active');
+                connectionStatus.innerText = "STREAM OFFLINE";
+                connectionStatus.style.color = "#94a3b8";
+            }, 1500);
+
+            // RECORD DATA POINTS ON ALL GRAPHS WHILE CAR IS DRIVEN / ACTIVE
+            if (speedVal > 0 || Math.abs(steerVal) > 0 || data.aebActive) {
+                const timeLabel = data.timestamp ? data.timestamp.split(' ')[0] : new Date().toLocaleTimeString();
+
+                const rainVal = data.rainLevel ?? data.rain ?? 0;
+                const fogVal = data.fogLevel ?? data.fog ?? 0;
+
+                // Photodiode calculated lux
+                const calculatedLux = Math.max(100, 10000 - (fogVal * 1800) - (rainVal * 800) + (Math.random() * 200 - 100));
+
+                const pushData = (chart, label, value, datasetIndex = 0) => {
+                    chart.data.labels.push(label);
+                    chart.data.datasets[datasetIndex].data.push(value);
+                    if (chart.data.labels.length > MAX_HISTORY) {
+                        chart.data.labels.shift();
+                        chart.data.datasets[datasetIndex].data.shift();
+                    }
+                };
+
+                // 1. Update Photodiode Lux Time-Series
+                pushData(chartLux, timeLabel, calculatedLux);
+                chartLux.update('none');
+
+                // 1. Update Photodiode Light Breakdown
+                chartLightSources.data.datasets[0].data = [
+                    calculatedLux * 0.8,
+                    150 + (rainVal * 40),
+                    450 + (fogVal * 30),
+                    80
+                ];
+                chartLightSources.update('none');
+
+                // 2. DYNAMICALLY UPDATE: LiDAR SNR vs Distance Curve based on live weather & noise
+                const snrNoise = (Math.random() * 1.5) - 0.75;
+                const attenuation = (fogVal * 3.2) + (rainVal * 1.8) + (speedVal * 0.05);
+                const baseSNR = [45, 42, 35, 28, 22, 18, 14, 9, 4];
+                chartSNR.data.datasets[0].data = baseSNR.map(v => Math.max(0.5, Number((v - attenuation + snrNoise).toFixed(1))));
+                chartSNR.update('none');
+
+                // 2. Update Point Cloud Reflectivity Histogram
+                chartReflectivity.data.datasets[0].data = [
+                    Math.round(1200 + speedVal * 10),
+                    Math.round(850 + speedVal * 5),
+                    Math.round(430 + (data.objects || 0) * 100),
+                    Math.round(210)
+                ];
+                chartReflectivity.update('none');
+
+                // 3. Update Camera Latency & FPS
+                const simulatedLatency = 12 + (data.objects || 0) * 2.5 + Math.random() * 3;
+                pushData(chartLatency, timeLabel, simulatedLatency, 0);
+                pushData(chartLatency, timeLabel, Math.round(1000 / simulatedLatency), 1);
+                chartLatency.update('none');
+
+                // 3. DYNAMICALLY UPDATE: Camera Precision-Recall (P-R) Curves based on speed/weather degradations
+                const prPenalty = (fogVal * 0.04) + (rainVal * 0.02) + (speedVal * 0.001);
+                const vehiclePR = [1.0, 0.98, 0.95, 0.91, 0.84, 0.65].map(v => Math.max(0.1, Number((v - prPenalty + (Math.random() * 0.02 - 0.01)).toFixed(2))));
+                const pedPR = [1.0, 0.95, 0.90, 0.82, 0.73, 0.50].map(v => Math.max(0.1, Number((v - (prPenalty * 1.2) + (Math.random() * 0.02 - 0.01)).toFixed(2))));
+                
+                chartPR.data.datasets[0].data = vehiclePR;
+                chartPR.data.datasets[1].data = pedPR;
+                chartPR.update('none');
+
+                // 4. Update Vehicle Dynamics Speed & Steering Angle
+                pushData(chartDynamics, timeLabel, speedVal, 0);
+                pushData(chartDynamics, timeLabel, steerVal, 1);
+                chartDynamics.update('none');
+
+                // 4. Update CAN Bus Load
+                const busLoad = Math.min(100, 35 + (speedVal * 0.4) + (data.aebActive ? 30 : 0) + Math.random() * 5);
+                pushData(chartCANBus, timeLabel, busLoad);
+                chartCANBus.update('none');
+            }
+        };
+    </script>
+</body>
+</html>

@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ADAS Real-Time Telemetry Data Stream</title>
+    <style>
+        /* Top Navigation Bar Styling */
+        #top-navbar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 50px;
+            background: rgba(11, 15, 25, 0.95);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            align-items: center;
+            padding: 0 24px;
+            box-sizing: border-box;
+            z-index: 100;
+        }
+        #top-navbar .nav-links {
+            display: flex;
+            gap: 20px;
+        }
+        #top-navbar .nav-item {
+            color: #94a3b8;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: color 0.2s ease;
+        }
+        #top-navbar .nav-item:hover,
+        #top-navbar .nav-item.active {
+            color: #38bdf8;
+        }
+
+        :root {
+            --bg-glass: rgba(245, 248, 253, 0.85);
+            --border-glass: rgba(0, 0, 0, 0.08);
+            --text-main: #161b22;
+            --text-muted: #626d7f;
+            --accent-blue: #0066cc;
+            --accent-green: #00aa44;
+            --accent-red: #cc1111;
+            --accent-orange: #d47a00;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #0b0f19;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: #f8fafc;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .main-container {
+            margin-top: 70px;
+            padding: 24px;
+            max-width: 1500px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .page-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+
+        .page-title h1 {
+            margin: 0;
+            font-size: 22px;
+            font-weight: 800;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            background: linear-gradient(90deg, #38bdf8, #818cf8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .page-title p {
+            margin: 4px 0 0 0;
+            font-size: 12px;
+            color: #94a3b8;
+        }
+
+        /* Metric Cards Grid */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .card {
+            background: rgba(15, 23, 42, 0.75);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(12px);
+            border-radius: 12px;
+            padding: 16px;
+        }
+
+        .card .label {
+            font-size: 11px;
+            font-weight: 700;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 6px;
+        }
+
+        .card .value {
+            font-size: 26px;
+            font-weight: 800;
+            font-family: monospace;
+            color: #f8fafc;
+        }
+
+        .card .sub {
+            font-size: 12px;
+            color: #64748b;
+            margin-top: 4px;
+        }
+
+        /* Action Buttons */
+        .btn {
+            background: #0284c7;
+            color: #fff;
+            border: none;
+            padding: 10px 18px;
+            border-radius: 8px;
+            font-weight: 700;
+            font-size: 12px;
+            cursor: pointer;
+            letter-spacing: 0.5px;
+            transition: all 0.2s ease;
+        }
+        .btn:hover {
+            background: #0369a1;
+        }
+
+        /* Table Styling */
+        .table-card {
+            background: rgba(15, 23, 42, 0.75);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(12px);
+            border-radius: 12px;
+            padding: 20px;
+            overflow: hidden;
+        }
+
+        .table-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .table-header h3 {
+            margin: 0;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #e2e8f0;
+        }
+
+        .table-wrapper {
+            max-height: 520px;
+            overflow-y: auto;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-family: monospace;
+            font-size: 12px;
+            text-align: left;
+        }
+
+        th {
+            background: #1e293b;
+            color: #38bdf8;
+            padding: 12px 14px;
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            text-transform: uppercase;
+            font-size: 11px;
+            letter-spacing: 1px;
+        }
+
+        td {
+            padding: 10px 14px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            color: #cbd5e1;
+        }
+
+        tr:nth-child(even) {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        /* Status Badges */
+        .badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: 0.5px;
+            display: inline-block;
+        }
+        .badge.safe { background: rgba(0, 170, 68, 0.2); color: #4ade80; border: 1px solid rgba(0, 170, 68, 0.4); }
+        .badge.warn { background: rgba(212, 122, 0, 0.2); color: #fbbf24; border: 1px solid rgba(212, 122, 0, 0.4); }
+        .badge.critical { background: rgba(204, 17, 17, 0.25); color: #f87171; border: 1px solid rgba(204, 17, 17, 0.4); }
+        .badge.info { background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); }
+    </style>
+</head>
+<body>
+
+    <!-- Top Navigation Bar -->
+    <nav id="top-navbar">
+        <div class="nav-links">
+            <a href="index.html" class="nav-item">Simulator</a>
+            <a href="data.html" class="nav-item active">Data</a>
+            <a href="graph.html" class="nav-item">Graph</a>
+        </div>
+    </nav>
+
+    <div class="main-container">
+        <div class="page-header">
+            <div class="page-title">
+                <h1>TELEMETRY & ENVIRONMENTAL DATA STREAM</h1>
+                <p>Live Ingestion Channel // ADAS System & Weather Level Analytics</p>
+            </div>
+            <button class="btn" id="btn-export">📥 EXPORT CSV DATA</button>
+        </div>
+
+        <!-- Live Snapshot Grid -->
+        <div class="metrics-grid">
+            <div class="card">
+                <div class="label">CURRENT SPEED</div>
+                <div class="value" id="live-speed">0 <span style="font-size:14px; color:#64748b;">KM/H</span></div>
+                <div class="sub" id="live-gear">GEAR: D</div>
+            </div>
+            <div class="card">
+                <div class="label">STEERING ANGLE</div>
+                <div class="value" id="live-steer">0°</div>
+                <div class="sub">WHEEL ORIENTATION</div>
+            </div>
+            <div class="card">
+                <div class="label">MIN RANGE</div>
+                <div class="value" id="live-dist">50.0 <span style="font-size:14px; color:#64748b;">M</span></div>
+                <div class="sub">FORWARD LIDAR RANGE</div>
+            </div>
+            <div class="card">
+                <div class="label">RAIN CONDITION</div>
+                <div class="value" id="live-rain">LEVEL 0</div>
+                <div class="sub">PRECIPITATION LEVEL</div>
+            </div>
+            <div class="card">
+                <div class="label">FOG CONDITION</div>
+                <div class="value" id="live-fog">LEVEL 0</div>
+                <div class="sub">VISIBILITY DENSITY LEVEL</div>
+            </div>
+        </div>
+
+        <!-- Historical Stream Data Table -->
+        <div class="table-card">
+            <div class="table-header">
+                <h3>REAL-TIME LOG FRAMES (LAST 100 RECORDS)</h3>
+                <span id="stream-status" class="badge safe">CHANNEL CONNECTED</span>
+            </div>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>TIMESTAMP</th>
+                            <th>SPEED (KM/H)</th>
+                            <th>GEAR</th>
+                            <th>STEER (DEG)</th>
+                            <th>MIN RANGE (M)</th>
+                            <th>RAIN LEVEL</th>
+                            <th>FOG LEVEL</th>
+                            <th>OBJECTS</th>
+                            <th>AEB ACTIVE</th>
+                            <th>SYSTEM STATUS</th>
+                        </tr>
+                    </thead>
+                    <tbody id="telemetry-tbody">
+                        <tr>
+                            <td colspan="10" style="text-align: center; color: #64748b; padding: 24px;">
+                                Awaiting incoming broadcast frame from simulator...
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const telemetryChannel = new BroadcastChannel('adas_telemetry_channel');
+        const weatherChannel = new BroadcastChannel('adas_weather_channel');
+        
+        const telemetryHistory = [];
+        const maxLogs = 100;
+
+        const tbody = document.getElementById('telemetry-tbody');
+        const liveSpeed = document.getElementById('live-speed');
+        const liveGear = document.getElementById('live-gear');
+        const liveSteer = document.getElementById('live-steer');
+        const liveDist = document.getElementById('live-dist');
+        const liveRain = document.getElementById('live-rain');
+        const liveFog = document.getElementById('live-fog');
+
+        // Global live tracking variables
+        let liveRainValue = 0;
+        let liveFogValue = 0;
+
+        /**
+         * Fetch current weather from storage or payload aggressively
+         */
+        function readCurrentWeather(data = {}) {
+            // 1. First check localStorage under all potential key names
+            const storedRain = localStorage.getItem('adas_rain') ?? localStorage.getItem('rainLevel') ?? localStorage.getItem('rain');
+            const storedFog = localStorage.getItem('adas_fog') ?? localStorage.getItem('fogLevel') ?? localStorage.getItem('fog');
+
+            if (storedRain !== null && storedRain !== undefined) {
+                liveRainValue = parseInt(storedRain, 10);
+            } else if (data.rainLevel !== undefined && data.rainLevel > 0) {
+                liveRainValue = parseInt(data.rainLevel, 10);
+            } else if (data.rain !== undefined && data.rain > 0) {
+                liveRainValue = parseInt(data.rain, 10);
+            }
+
+            if (storedFog !== null && storedFog !== undefined) {
+                liveFogValue = parseInt(storedFog, 10);
+            } else if (data.fogLevel !== undefined && data.fogLevel > 0) {
+                liveFogValue = parseInt(data.fogLevel, 10);
+            } else if (data.fog !== undefined && data.fog > 0) {
+                liveFogValue = parseInt(data.fog, 10);
+            }
+
+            // Sanity bounds (0 to 5)
+            liveRainValue = Math.max(0, Math.min(5, isNaN(liveRainValue) ? 0 : liveRainValue));
+            liveFogValue = Math.max(0, Math.min(5, isNaN(liveFogValue) ? 0 : liveFogValue));
+
+            // Update UI Cards
+            liveRain.innerText = `LEVEL ${liveRainValue}`;
+            liveFog.innerText = `LEVEL ${liveFogValue}`;
+        }
+
+        // Run weather sync immediately on load
+        readCurrentWeather();
+
+        // Listen for direct slider broadcasts on weather channel
+        weatherChannel.onmessage = (event) => {
+            if (event && event.data) {
+                if (event.data.rainLevel !== undefined || event.data.rain !== undefined) {
+                    const r = event.data.rainLevel ?? event.data.rain;
+                    localStorage.setItem('adas_rain', r);
+                }
+                if (event.data.fogLevel !== undefined || event.data.fog !== undefined) {
+                    const f = event.data.fogLevel ?? event.data.fog;
+                    localStorage.setItem('adas_fog', f);
+                }
+                readCurrentWeather(event.data);
+            }
+        };
+
+        // Listen for localStorage changes across browser tabs
+        window.addEventListener('storage', () => {
+            readCurrentWeather();
+        });
+
+        // Continuously poll storage every 200ms as a ultimate safety net
+        setInterval(() => {
+            readCurrentWeather();
+        }, 200);
+
+        // Main telemetry receiver loop
+        telemetryChannel.onmessage = (event) => {
+            const data = event.data || {};
+
+            // Always sync weather state before constructing the table row
+            readCurrentWeather(data);
+
+            // Live Snapshot Card Updates
+            liveSpeed.innerHTML = `${Math.round(data.speed || 0)} <span style="font-size:14px; color:#64748b;">KM/H</span>`;
+            liveGear.innerText = `GEAR: ${data.gear || 'D'}`;
+            liveSteer.innerText = `${data.steer || 0}°`;
+            
+            const distVal = data.minDistance !== undefined ? data.minDistance : (data.distance !== undefined ? data.distance : 50);
+            liveDist.innerHTML = `${parseFloat(distVal).toFixed(1)} <span style="font-size:14px; color:#64748b;">M</span>`;
+
+            // Build historical table record using live rain and fog values
+            const record = {
+                timestamp: data.timestamp ? (data.timestamp.includes('T') ? data.timestamp.split('T')[1].slice(0, 8) : data.timestamp) : new Date().toLocaleTimeString('en-US', { hour12: false }),
+                speed: Math.round(data.speed || 0),
+                gear: data.gear || 'D',
+                steer: data.steer || 0,
+                minDistance: parseFloat(distVal),
+                rainLevel: liveRainValue,
+                fogLevel: liveFogValue,
+                objects: data.objects !== undefined ? data.objects : 0,
+                aebActive: data.aebActive || false,
+                fcwState: data.fcwState || 'SYSTEM NORMAL'
+            };
+
+            telemetryHistory.unshift(record);
+            if (telemetryHistory.length > maxLogs) {
+                telemetryHistory.pop();
+            }
+
+            renderTable();
+        };
+
+        function renderTable() {
+            if (telemetryHistory.length === 0) return;
+
+            tbody.innerHTML = telemetryHistory.map((row) => {
+                let badgeClass = 'safe';
+                if (row.minDistance < 12 || row.aebActive) badgeClass = 'critical';
+                else if (row.minDistance < 28) badgeClass = 'warn';
+
+                let rainBadge = row.rainLevel > 3 ? 'critical' : (row.rainLevel > 1 ? 'warn' : 'info');
+                let fogBadge = row.fogLevel > 3 ? 'critical' : (row.fogLevel > 1 ? 'warn' : 'info');
+
+                return `
+                    <tr>
+                        <td>${row.timestamp}</td>
+                        <td>${row.speed}</td>
+                        <td>${row.gear}</td>
+                        <td>${row.steer}°</td>
+                        <td>${row.minDistance.toFixed(2)}</td>
+                        <td><span class="badge ${rainBadge}">LEVEL ${row.rainLevel}</span></td>
+                        <td><span class="badge ${fogBadge}">LEVEL ${row.fogLevel}</span></td>
+                        <td>${row.objects}</td>
+                        <td><span class="badge ${row.aebActive ? 'critical' : 'safe'}">${row.aebActive ? 'TRUE' : 'FALSE'}</span></td>
+                        <td><span class="badge ${badgeClass}">${row.fcwState}</span></td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        // CSV Export Feature
+        document.getElementById('btn-export').addEventListener('click', () => {
+            if (telemetryHistory.length === 0) {
+                alert('No telemetry data available for export.');
+                return;
+            }
+
+            const headers = ['Timestamp', 'Speed_KMH', 'Gear', 'Steer_Deg', 'Min_Distance_M', 'Rain_Level', 'Fog_Level', 'Objects_Count', 'AEB_Active', 'FCW_State'];
+            const csvRows = [headers.join(',')];
+
+            telemetryHistory.forEach(item => {
+                const values = [
+                    `"${item.timestamp}"`,
+                    item.speed,
+                    `"${item.gear}"`,
+                    item.steer,
+                    `"${item.minDistance.toFixed(2)}"`,
+                    item.rainLevel,
+                    item.fogLevel,
+                    item.objects,
+                    item.aebActive,
+                    `"${item.fcwState}"`
+                ];
+                csvRows.push(values.join(','));
+            });
+
+            const csvContent = 'data:text/csv;charset=utf-8,' + csvRows.join('\n');
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement('a');
+            link.setAttribute('href', encodedUri);
+            link.setAttribute('download', `adas_telemetry_export_${Date.now()}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        });
+    </script>
+</body>
+</html>
