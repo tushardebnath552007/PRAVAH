@@ -2,7 +2,7 @@
 
 The backend is a small Express service that serves the React dashboard, hosts the REST telemetry surface, and runs an in-memory telemetry engine for integrations and diagnostics.
 
-It does **not** drive the live dashboard. The dashboard's live values come from the browser 3D simulation over `BroadcastChannel`. The REST feed is an independent, headless 1 Hz model.
+It does **not** drive the live dashboard. When DATA STREAM MODE is DEMO, the dashboard's live values come from the browser 3D simulation over `BroadcastChannel`; PI 5 and OFF modes use frontend-local fallback behavior. The REST feed is an independent, headless 1 Hz model.
 
 ---
 
@@ -408,7 +408,7 @@ apiRouter.post('/demo', (req: Request, res: Response) => {
 - **`npm install` peer errors:** use `--legacy-peer-deps`.
 - **`npm run clean` fails on Windows:** the script uses `rm -rf`; delete `dist` manually or use Git Bash/WSL.
 - **History empty after start:** the engine needs up to a minute to fill 60 frames; the array starts empty.
-- **Weather endpoint appears to do nothing on the dashboard:** expected. The dashboard uses the browser simulation; the REST engine is separate.
+- **Weather endpoint appears to do nothing on the dashboard:** expected. In DEMO mode the dashboard uses the browser simulation; the REST engine is separate.
 - **Simulation 404 after deploy:** confirm `public/assets/simulation/adas-world.html` is present after the build. Vite copies `public/` into `dist/`.
 - **State resets on restart:** no database; uptime, history, logs and settings return to defaults.
 - **No CORS headers:** call the API from the same origin or add CORS explicitly if you expose it to another host.

@@ -11,7 +11,7 @@ This document explains how the React dashboard is organized, where state lives, 
 - **Routing:** no router. `activeTab` in `TelemetryContext` selects one of six views.
 - **Primary state:** a single context, `TelemetryContext`, owns telemetry, settings, history, logs, modals and audio.
 - **Simulation:** an iframe (`public/assets/simulation/adas-world.html`) runs a Three.js world and streams telemetry over `BroadcastChannel`.
-- **Backend calls:** only two — `POST /api/daylight-mode` and `POST /api/simulation/state`. All live values come from the simulation.
+- **Backend calls:** only two — `POST /api/daylight-mode` and `POST /api/simulation/state`. In DEMO mode, all live values come from the 3D simulation; PI 5 mode uses the local fallback and OFF freezes updates.
 
 ```
 main.tsx
@@ -36,10 +36,10 @@ main.tsx
 
 | State | Owner | Notes |
 | --- | --- | --- |
-| Vehicle physics, collisions, LiDAR rays | Simulator (`adas-world.html`) | Broadcast at ~10 Hz |
-| Speed, steering, gear, heading, range | `TelemetryContext` | Written by `applySimFrame` |
-| 8 proximity zones | `TelemetryContext` | Derived from simulator `sectors` |
-| Detections / bounding boxes | Simulator → context | Simulator sends list, context clamps and maps |
+| Data stream mode | `TelemetryContext` | `DEMO` (`SIMULATION`) lets the 3D world own the dashboard; `PI 5` and `OFF` do not |
+| Vehicle physics, collisions, LiDAR rays | Simulator (`adas-world.html`) | Broadcast at ~10 Hz; accepted only in DEMO |
+| Speed, steering, gear, heading, range | `TelemetryContext` | Written by `applySimFrame` (DEMO) or the fallback loop |
+| 8 proximity zones | `TelemetryContext` | Derived from simulator `sectors` in DEMO, mock otherwise |
 | Weather sliders | `TelemetryContext` (site authoritative) | Persisted in `localStorage` |
 | Night mode | `TelemetryContext` (site authoritative) | Simulator can echo a toggle back |
 | AEB / FCW / servo | Simulator, with site override | Manual AEB sends a control message |
@@ -66,7 +66,7 @@ import { useTelemetry } from '../context/TelemetryContext';
 | --- | --- | --- |
 | `activeTab` | `NavigationTab` | Current view |
 | `setActiveTab` | `(tab) => void` | Switch view |
-| `connectionMode` | `ONLINE_PI5 \| SIMULATION \| OFFLINE` | Link mode |
+| `connectionMode` | `ONLINE_PI5 \| SIMULATION \| OFFLINE` | Data stream mode; default `SIMULATION` (DEMO) |
 | `setConnectionMode` | `(mode) => void` | Change mode |
 | `killSwitchActive` | `boolean` | Actuator lock |
 | `toggleKillSwitch` | `() => void` | Engage/release lock |
@@ -156,7 +156,10 @@ import { useTelemetry } from '../context/TelemetryContext';
 | `frontend/components/layout/TopHeader.tsx` | Clock, link state, AEB controls, notifications, theme/night toggles |
 | `frontend/components/views/CommandCenterView.tsx` | Primary dashboard and embedded 3D simulation |
 | `frontend/components/views/SensorMatrixView.tsx` | 8-zone proximity matrix and radar |
-| `frontend/components/views/AiPerceptionView.tsx` | Canvas camera simulation, detection overlays, inference controls |
+| `frontend/components/views/AiPerceptionView.tsx` | Canvas camera simulation, detection overlays, inference controls, embedded road-vision engine |
+| `frontend/components/ai-perception/RoadVehicleDetector.tsx` | Video/canvas perception engine: optical flow, NMS tracking, FCW, BSD, potholes, CSV telemetry |
+| `frontend/components/ai-perception/ConfidenceHistoryChart.tsx` | D3.js temporal stability and spatial hazard-density charts |
+| `frontend/components/ai-perception/HistoricalAlertsSidePanel.tsx` | Critical-alert drawer with jump-to-timestamp and acknowledgements |
 | `frontend/components/views/DataSheetEnvironmentView.tsx` | Weather, environment tables, CSV/JSON export |
 | `frontend/components/views/ThreatActuationView.tsx` | ADAS settings, actuator state, buzzer/LED/voice tests |
 | `frontend/components/views/DiagnosticsLogsView.tsx` | Logs, charts, IMU/GPS, system health |
@@ -169,6 +172,17 @@ import { useTelemetry } from '../context/TelemetryContext';
 | `frontend/utils/audioSynthesizer.ts` | Web Audio alarms, piezo tones, speech synthesis |
 | `frontend/utils/exportCsv.ts` | CSV/JSON download helpers |
 | `frontend/types/telemetry.ts` | Shared types and tab union |
+
+### Road-vision engine (AI Perception)
+
+`AiPerceptionView` keeps the canvas HUD and appends a self-contained video perception console under it. The console is ported from the standalone road-vision prototype and lives entirely in `frontend/components/ai-perception/`:
+
+- `RoadVehicleDetector.tsx` — owns the `<video>`, hidden compute canvas and overlay canvas. It tracks vehicles with IoU/NMS and a counting line, finds potholes/pedestrians, derives FCW/BSD/blind-corner/unstructured-road state, and logs 30-frame telemetry.
+- `ConfidenceHistoryChart.tsx` — D3.js temporal confidence plot plus 2D hazard heatmap. Chart width is clamped to at least 320 px so narrow viewports cannot produce negative SVG sizes.
+- `HistoricalAlertsSidePanel.tsx` — alert drawer with timestamp jump, filters and acknowledgements.
+- `types.ts` — `VisionTabType` union for the four sub-tabs.
+
+The sample video is `public/assets/road-vision/demo.mp4` (about 21 MB, 1280×720, 18 s, looped). It is served as a static asset and copied into `dist/` on build. The engine does not touch `TelemetryContext`; it is an independent perception lab, so it never competes with the 3D world for dashboard telemetry. It starts paused — press **Play & Detect** to run the detection loop.
 
 ---
 
@@ -199,34 +213,47 @@ On iframe load, it re-sends config, weather, night, camera and pause state at 25
 Control messages from the wrapper include `target: instance`. Simulator messages include `instance`; the context uses this to ignore stale or competing frames:
 
 ```ts
+if (connectionModeRef.current !== 'SIMULATION') return; // DEMO only
 if (d.instance === 'modal' && !modalOpenRef.current) return;
 if (d.instance === 'embedded' && modalOpenRef.current) return;
 ```
+
+Effectively:
+
+| Mode | Telemetry source | Simulator panel |
+| --- | --- | --- |
+| `SIMULATION` (DEMO) | 3D world, falling back to mock if stale | `LIVE FEED` / `PAUSED` / `CONNECTING` |
+| `ONLINE_PI5` (PI 5) | Local fallback loop | `VIEW ONLY` |
+| `OFFLINE` (OFF) | No updates; last values freeze | `VIEW ONLY` |
 
 ### Frame application
 
 `applySimFrame(d)`:
 
-1. Marks the link live and updates `lastSimMessageTimeRef`.
-2. Aborts if the kill switch is engaged (link stays live, values freeze).
-3. Clamps speed/steer/heading and writes them.
-4. Maps `sectors` into the 8 `proximityZones`, deriving threat levels from each zone's max range.
-5. Sanitises the detection list (type, confidence, position, size, velocity) and writes up to 8 objects.
-6. Writes AEB, FCW, servo, glare, AGS, IMU and GPS.
-7. Derives LKA/ACC from settings and current steering/speed.
-8. Announces automatic AEB transitions with an alarm, optional voice alert and an event log (rate-limited to one every 3 s).
+1. Aborts unless `connectionMode` is `SIMULATION` (DEMO).
+2. Marks the link live and updates `lastSimMessageTimeRef`.
+3. Aborts if the kill switch is engaged (link stays live, values freeze).
+4. Clamps speed/steer/heading and writes them.
+5. Maps `sectors` into the 8 `proximityZones`, deriving threat levels from each zone's max range.
+6. Sanitises the detection list (type, confidence, position, size, velocity) and writes up to 8 objects.
+7. Writes AEB, FCW, servo, glare, AGS, IMU and GPS.
+8. Derives LKA/ACC from settings and current steering/speed.
+9. Announces automatic AEB transitions with an alarm, optional voice alert and an event log (rate-limited to one every 3 s).
 
 ### Stale-link fallback
 
 A 1 Hz interval in the context does the following:
 
 - increments uptime;
-- marks `simulationLinked` false after 2.5 s without frames;
-- runs a mock cruise loop only when no live simulation is active;
+- tracks the live link only in DEMO mode;
+- marks `simulationLinked` false when the mode is not DEMO or frames are older than 2.5 s;
+- runs the mock cruise loop whenever the 3D world is not actively driving (PI 5, or a stale DEMO link);
 - recomputes LiDAR SNR/signal, FPS, latency, CAN load, CPU/RAM, health and history;
-- runs mock AEB/FCW logic and hazard modal triggers when the simulation is absent.
+- runs mock AEB/FCW logic and hazard modal triggers when the simulation is not driving.
 
-This fallback is why the dashboard remains usable with the iframe blocked or hidden.
+In `OFFLINE` mode the interval returns early, so values and uptime freeze. Switching out of DEMO also resets `lastSimMessageTimeRef` and clears the AEB transition latch so the fallback takes over immediately.
+
+This fallback is why the dashboard remains usable with the iframe blocked, hidden, or deliberately set to view-only.
 
 ### Weather/night authority
 
@@ -234,8 +261,8 @@ The dashboard owns the controls:
 
 - `setRainLevel` / `setFogLevel` update state, `localStorage`, and broadcast on both weather and control channels.
 - `toggleNightMode` computes the next value **outside** the state updater (StrictMode safety) and sends `night`.
-- A toggle inside the iframe sends `nightState`; the context applies it without echoing another control message.
-- On arrival, weather is also received on `adas_weather_channel`. The context listens and updates display state.
+- A toggle inside the iframe sends `nightState`; in DEMO mode the context applies it without echoing another control message.
+- On arrival, weather is also received on `adas_weather_channel`. In DEMO mode the context listens and updates display state; in PI 5/OFF modes simulator echoes are ignored.
 
 ### Modal behavior
 
@@ -329,20 +356,22 @@ Clear these keys when testing to start from a clean state.
 
 1. `npm run lint` — TypeScript clean.
 2. `npm run build` — production bundle builds.
-3. Command Center — `LIVE FEED`, moving speed and range.
-4. Drive pad — accelerate, steer, reverse, brake.
-5. Keyboard inside iframe — `W/A/S/D`, arrows, `Space`, `1/2` camera.
-6. Pause/resume — speed 0 and `FCW: SIMULATION PAUSED` while paused.
-7. Manual AEB/release — 0 km/h, 90° servo, log entry, alarm.
-8. Automatic AEB — drive into a vehicle at a low threshold and confirm the transition log fires once.
-9. Night — scene change and glare/AGS with oncoming traffic.
-10. Weather — sliders propagate to both instances and site cards update.
-11. Proximity zones — warnings escalate as the car closes in.
-12. Tab switching — telemetry and history continue while other views are open.
-13. Fullscreen — modal drives telemetry; embedded pauses; closing resumes it.
-14. Kill switch — actuators freeze; releasing restores the feed.
-15. Theme — daylight/dark both render correctly; preference survives reload.
-16. Audio — piezo test and AEB alarm work after a user gesture.
+3. Command Center — `LIVE FEED`, moving speed and range (DEMO default).
+4. Data stream modes — `PI 5` shows `VIEW ONLY` and stops sim control; `DEMO` reconnects; `OFF` freezes values.
+5. Drive pad — accelerate, steer, reverse, brake.
+6. Keyboard inside iframe — `W/A/S/D`, arrows, `Space`, `1/2` camera.
+7. Pause/resume — speed 0 and `FCW: SIMULATION PAUSED` while paused.
+8. Manual AEB/release — 0 km/h, 90° servo, log entry, alarm.
+9. Automatic AEB — drive into a vehicle at a low threshold and confirm the transition log fires once.
+10. Night — scene change and glare/AGS with oncoming traffic.
+11. Weather — sliders propagate to both instances and site cards update.
+12. Proximity zones — warnings escalate as the car closes in.
+13. Tab switching — telemetry and history continue while other views are open.
+14. Fullscreen — modal drives telemetry; embedded pauses; closing resumes it.
+15. Kill switch — actuators freeze; releasing restores the feed.
+16. Theme — daylight/dark both render correctly; preference survives reload.
+17. Audio — piezo test and AEB alarm work after a user gesture.
+18. Road-vision engine — the sample video loads, **Play & Detect** starts overlays, the four sub-tabs render, and the stability tab shows D3 charts without console errors.
 
 ---
 
@@ -351,12 +380,18 @@ Clear these keys when testing to start from a clean state.
 - **StrictMode double-invocation:** never put channel posts, `fetch`, or other side effects inside a `setState` updater. Follow the `toggleNightMode`/`toggleSimRunning`/`toggleKillSwitch` pattern: compute next value from closure state, set state, then send.
 - **Iframe focus:** raw keyboard input only works when the iframe document has focus. The drive pad exists specifically to avoid this limitation.
 - **Rendering vs. physics:** the simulator's physics runs on `setInterval(33)`, rendering on `requestAnimationFrame`. Telemetry continues even when the iframe is hidden or the host pane is not painting. Do not move physics into the render loop.
+- **Road-vision console is dark by design:** the video perception panel keeps its own dark chrome in both themes, like a camera wall. The surrounding card adapts to the PRAVAH theme.
+- **21 MB sample video:** `demo.mp4` is large by design. If you deploy over a slow link, replace it with a smaller clip or host it behind a CDN; the component only needs `videoSrcUrl` to change.
+- **Vision engine is independent:** it does not read or write `TelemetryContext`. Do not wire it to `detectedObjects` — it has its own optical-flow pipeline.
+- **Mode gating:** `applySimFrame` and the simulator weather/night echoes return early unless `connectionMode === 'SIMULATION'`. Keep this guard; otherwise PI 5 and OFF modes are silently overwritten by the 3D world. The mode is read through `connectionModeRef` so the channel listener does not need re-subscribing.
+- **Leaving DEMO:** an effect resets `lastSimMessageTimeRef` and `prevAebRef` when the mode changes away from DEMO, so the fallback loop and AEB announcements take over immediately.
+- **Simulator panel status:** `AdasWorldSimulation` shows `VIEW ONLY` outside DEMO, regardless of whether frames are arriving, and `LIVE FEED`/`PAUSED`/`CONNECTING` inside DEMO.
 - **Two instances:** always include `target`/`instance`; otherwise the embedded and modal engines will both react and telemetry will oscillate.
-- **Modal gating:** the embedded instance is paused while the modal is open by design. If you change `syncSimulator`, preserve this rule.
+- **Modal gating:** the embedded instance is paused while the modal is open by design. If you change `syncSimulator`, preserve this rule. This gating only affects which instance drives telemetry while DEMO is selected.
 - **Site vs. simulator defaults:** site AEB default is 1.8 m; simulator default is 2.0 m. The site config wins after sync.
 - **Forward range clamp:** the site clamps forward LiDAR to 12 m for display while the simulator ranges up to 50 m.
-- **Weather echo loop:** both site and simulator post weather. The site only updates local display state on echo and does not re-broadcast on every echo, which avoids feedback loops. Keep it that way.
-- **`applySimFrame` is memoised** with `addEventLog`; it reads mutable state through refs (`killSwitchRef`, `modalOpenRef`, `settingsRef`, `prevAebRef`). Use refs instead of adding dependencies that would rebuild the channel listener.
+- **Weather echo loop:** both site and simulator post weather. The site only updates local display state on echo in DEMO and does not re-broadcast on every echo, which avoids feedback loops. Keep it that way.
+- **`applySimFrame` is memoised** with `addEventLog`; it reads mutable state through refs (`connectionModeRef`, `killSwitchRef`, `modalOpenRef`, `settingsRef`, `prevAebRef`). Use refs instead of adding dependencies that would rebuild the channel listener.
 - **Backend is not the live feed:** `/api/telemetry` is a separate 1 Hz engine. Do not wire views to it expecting the 3D world's values.
 - **`CommandCenterView` is always mounted:** avoid expensive duplicate subscriptions inside it; it runs even when hidden.
 - **Web Audio:** audio only starts after a user gesture; test accordingly.
@@ -374,6 +409,7 @@ Clear these keys when testing to start from a clean state.
 | Iframe lifecycle and controls | `frontend/components/simulation/AdasWorldSimulation.tsx` |
 | Modal and engine choice | `frontend/components/modals/SimulatorModal.tsx` |
 | Theme tokens | `frontend/index.css` |
+| Road-vision engine and sample video | `frontend/components/ai-perception/`, `public/assets/road-vision/demo.mp4` |
 | Shared types | `frontend/types/telemetry.ts` |
 | Alarm and voice synthesis | `frontend/utils/audioSynthesizer.ts` |
 | Exports | `frontend/utils/exportCsv.ts` |

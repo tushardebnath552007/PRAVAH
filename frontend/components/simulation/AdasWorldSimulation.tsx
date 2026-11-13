@@ -45,6 +45,7 @@ export const AdasWorldSimulation: React.FC<AdasWorldSimulationProps> = ({
     detectedObjects,
     aebActive,
     simulationLinked,
+    connectionMode,
     isSimRunning,
     toggleSimRunning,
     triggerManualAEB,
@@ -159,6 +160,13 @@ export const AdasWorldSimulation: React.FC<AdasWorldSimulationProps> = ({
   };
 
   const src = `/assets/simulation/adas-world.html?embed=${embed ? '1' : '0'}&instance=${instance}`;
+  const simControlsDashboard = connectionMode === 'SIMULATION';
+  const linkLive = simControlsDashboard && simulationLinked && isSimRunning;
+  const statusLabel = !simControlsDashboard
+    ? 'VIEW ONLY'
+    : simulationLinked
+      ? (isSimRunning ? 'LIVE FEED' : 'PAUSED')
+      : 'CONNECTING';
   const accentText = daylightMode ? 'text-sky-700' : 'text-cyan-300';
   const panelBg = daylightMode ? 'bg-white/80' : 'bg-[#04070D]/80';
   const border = daylightMode ? 'border-slate-300' : 'border-cyan-500/30';
@@ -185,14 +193,15 @@ export const AdasWorldSimulation: React.FC<AdasWorldSimulationProps> = ({
             </div>
           </div>
           <span
+            title={!simControlsDashboard ? 'Switch DATA STREAM MODE to DEMO to let the 3D world drive the dashboard' : undefined}
             className={`ml-1 flex items-center gap-1 px-1.5 py-0.5 rounded border font-mono text-[9px] font-bold ${
-              simulationLinked && isSimRunning
+              linkLive
                 ? 'text-emerald-500 border-emerald-500/40 bg-emerald-500/10'
                 : 'text-amber-500 border-amber-500/40 bg-amber-500/10'
             }`}
           >
-            <span className={`w-1.5 h-1.5 rounded-full ${simulationLinked && isSimRunning ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
-            {simulationLinked ? (isSimRunning ? 'LIVE FEED' : 'PAUSED') : 'CONNECTING'}
+            <span className={`w-1.5 h-1.5 rounded-full ${linkLive ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+            {statusLabel}
           </span>
         </div>
 

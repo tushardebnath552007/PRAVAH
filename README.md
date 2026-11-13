@@ -27,7 +27,7 @@ The interface is built for a Raspberry Pi 5-class vehicle node: CAN 2.0B telemet
 
 ## What the site does
 
-PRAVAH is an operator console for a live vehicle telemetry feed, with a 3D world as the source of truth.
+PRAVAH is an operator console for a live vehicle telemetry feed, with a 3D world as the live source when DATA STREAM MODE is set to DEMO.
 
 - **Live telemetry** — speed, steering, gear, heading, LiDAR range, detection list, 8-zone proximity matrix, AEB/FCW state, servo position, IMU, GPS, and Raspberry Pi 5 hardware load.
 - **3D driving world** — a Three.js city loop with traffic, pedestrians, potholes, rain, fog, night driving and oncoming headlights.
@@ -36,7 +36,7 @@ PRAVAH is an operator console for a live vehicle telemetry feed, with a 3D world
 - **Data exports** — CSV/JSON snapshots of telemetry history and sensor matrices.
 - **Responsive dual theme** — daylight cockpit theme and a dark cyber telemetry theme.
 
-Everything the dashboard displays is driven by the embedded simulation when it is running. If the simulation is unavailable, the console falls back to a local mock telemetry loop so the UI never freezes.
+Everything the dashboard displays is driven by the embedded simulation **only while DATA STREAM MODE is set to DEMO**. In PI 5 mode the 3D world stays visible as a view-only preview and the local telemetry fallback owns the dashboard; in OFF mode updates stop and the last values remain on screen.
 
 ---
 
@@ -68,6 +68,14 @@ The default screen and the home of the 3D world.
 - Overlay toggles and confidence threshold
 - Fog/rain, night and anti-glare visualization
 - Inference latency and camera FPS metrics
+- **Road, Vehicle & Hazard Vision Engine** — a video-based perception lab embedded below the HUD:
+  - sample highway video (`public/assets/road-vision/demo.mp4`), custom upload or live webcam
+  - optical-flow detection with NMS, IoU tracking, counting line and green road-line tracing
+  - vehicles, pedestrians, potholes, blind spots, blind corners and unstructured-road classification
+  - forward-collision warning with TTC, hazard banner and audio chime
+  - D3.js temporal confidence stability and 2D spatial hazard-density charts
+  - historical critical-alert side panel and CSV telemetry export
+  - four sub-tabs: `Road, Vehicle & Hazard Vision`, `Blind Spots & Forward Collision`, `Unstructured Road & Potholes`, `Model Stability (D3.js)`
 
 ### 04. Data Sheet & Environment
 
@@ -96,6 +104,7 @@ The default screen and the home of the 3D world.
 ### Global controls
 
 - **Kill switch** — locks actuators into a safe state and freezes the simulation feed.
+- **Data stream mode** — selects which source owns the dashboard: `DEMO` (3D simulation), `PI 5` (local fallback feed) or `OFF` (freeze updates).
 - **Manual AEB** — trigger or release emergency braking from the header or the simulator panel.
 - **Daylight mode** — switches the entire site between the daylight cockpit theme and the dark telemetry theme.
 - **Notification drawer** — recent events and diagnostic alerts.
@@ -107,11 +116,23 @@ The default screen and the home of the 3D world.
 
 The world lives at `public/assets/simulation/adas-world.html`. It is a self-contained Three.js scene served from the same origin and embedded through an iframe.
 
+### Data stream modes
+
+The DATA STREAM MODE selector in the left drawer decides whether the 3D world is allowed to drive the dashboard.
+
+| Mode | UI label | Behaviour |
+| --- | --- | --- |
+| `SIMULATION` | **DEMO** | The 3D world drives every telemetry parameter |
+| `ONLINE_PI5` | **PI 5** | The 3D world is still visible but view-only; the dashboard runs the local telemetry fallback |
+| `OFFLINE` | **OFF** | Dashboard updates stop and the last values remain frozen |
+
+DEMO is the default. Switching away from DEMO immediately detaches the simulation feed; switching back reconnects as soon as the next frame arrives (within ~100 ms).
+
 ### How it drives the dashboard
 
 1. The simulator advances physics, traffic, weather and ADAS inference on a ~33 ms engine interval.
 2. It broadcasts a telemetry frame on `BroadcastChannel('adas_telemetry_channel')` at most every 100 ms.
-3. `TelemetryContext` receives the frame, filters it by instance (`embedded` vs `modal`), and writes it into React state.
+3. `TelemetryContext` accepts the frame only in DEMO mode, filters it by instance (`embedded` vs `modal`), and writes it into React state.
 4. Every view reads that shared state, so the dashboard follows the 3D world continuously.
 
 The simulation keeps running while the iframe is not visible or not painting, because physics runs on an interval and rendering runs separately on `requestAnimationFrame`.
@@ -148,7 +169,7 @@ Controls inside the dashboard (and their simulator keys):
 | Weather | Rain/fog sliders on Data Sheet | Simulator sliders |
 | Fullscreen | Expand button | — |
 
-The site is authoritative for weather and night mode. Slider changes are pushed into both the embedded and modal simulation instances, and the simulator echoes them back so both stay in sync.
+The site is authoritative for weather and night mode. Slider changes are pushed into both the embedded and modal simulation instances, and the simulator echoes them back so both stay in sync. Simulator-originated weather/night changes are accepted only in DEMO mode.
 
 ### Two simulation instances
 
@@ -159,7 +180,7 @@ Each instance tags its telemetry with `instance`. The context ignores modal fram
 
 ### Fallback behavior
 
-If no simulation frame has arrived for 2.5 seconds, `TelemetryContext` marks the link as stale and starts a lightweight mock cruise loop. That loop keeps charts and gauges populated until the simulation reconnects. When the kill switch is active, incoming frames are acknowledged for link status but do not update telemetry.
+In DEMO mode, if no simulation frame has arrived for 2.5 seconds, `TelemetryContext` marks the link as stale and starts a lightweight mock cruise loop so charts and gauges stay populated until the simulation reconnects. PI 5 mode always uses that fallback loop; OFF mode stops the update loop entirely. When the kill switch is active, incoming frames are acknowledged for link status but do not update telemetry.
 
 ---
 
@@ -210,7 +231,7 @@ If no simulation frame has arrived for 2.5 seconds, `TelemetryContext` marks the
 | Layer | Technology |
 | --- | --- |
 | UI | React 19, TypeScript 7, Tailwind CSS 4 |
-| Charts | Recharts 3 |
+| Charts | Recharts 3, D3.js 7 (AI Perception vision analytics) |
 | Icons | Lucide React |
 | Animation | CSS keyframes, `motion` |
 | 3D world | Three.js 0.187 (loaded in the iframe), OrbitControls |
@@ -236,6 +257,7 @@ No database or external telemetry service is required. All state is in memory or
 │   ├── main.tsx             # React root
 │   ├── index.css            # Tailwind theme, glass panels, animations
 │   ├── components/
+│   │   ├── ai-perception/   # Video perception engine, D3 charts, alert side panel
 │   │   ├── layout/          # Navigation drawer, top header
 │   │   ├── modals/          # Critical hazard modal, simulator modal
 │   │   ├── radar/           # Radar sweep viewport
@@ -250,6 +272,8 @@ No database or external telemetry service is required. All state is in memory or
 │       └── exportCsv.ts
 ├── public/
 │   └── assets/
+│       ├── road-vision/
+│       │   └── demo.mp4          # Sample highway video for the AI Perception vision engine
 │       └── simulation/
 │           └── adas-world.html   # Self-contained Three.js simulation
 ├── index.html               # HTML shell, fonts, meta
@@ -464,7 +488,7 @@ All responses follow:
 { "status": "success", "data": { } }
 ```
 
-> The backend engine is an independent 1 Hz simulation used by the REST surface. The dashboard's live values come from the browser 3D world through `BroadcastChannel`, not from `/api/telemetry`. This is intentional: the 3D world is the interactive source of truth, while the API provides a headless telemetry surface for integrations and diagnostics.
+> The backend engine is an independent 1 Hz simulation used by the REST surface. In DEMO mode, the dashboard's live values come from the browser 3D world through `BroadcastChannel`, not from `/api/telemetry`. This is intentional: the 3D world is the interactive source of truth while DEMO is selected, while the API provides a headless telemetry surface for integrations and diagnostics.
 
 ---
 
@@ -505,7 +529,7 @@ Serving behavior:
 
 Use this after changes to the simulation or context:
 
-1. **Boot** — Command Center shows `LIVE FEED`; speed and front range move without input.
+1. **Boot** — Command Center shows `LIVE FEED`; speed and front range move without input (DEMO is the default mode).
 2. **Drive** — hold ▲; speed rises. Hold ◀/▶; steering and heading change. Press BRAKE; speed drops.
 3. **Pause/resume** — pause freezes speed at 0 and reports `FCW: SIMULATION PAUSED`; resume continues.
 4. **AEB** — press the shield button; speed goes to 0, servo shows 90°, FCW reports AEB. Release restores normal drive.
@@ -516,14 +540,16 @@ Use this after changes to the simulation or context:
 9. **Tabs** — switch tabs; telemetry keeps updating and charts keep appending.
 10. **Fullscreen** — open the simulator modal; the embedded instance pauses, the modal instance drives telemetry. Close it; the embedded instance resumes.
 11. **Logs** — AEB transitions appear in Diagnostics & Logs.
-12. **Build** — `npm run lint` and `npm run build` both pass.
+12. **Mode switch** — select `PI 5`: the simulator chip changes to `VIEW ONLY` and website values stop following the 3D world. Select `DEMO`: the chip returns to `LIVE FEED` within a second. Select `OFF`: all updates freeze.
+13. **Road-vision engine** — open AI Perception, scroll to the vision engine, press **Play & Detect**, and confirm video overlays, the alert drawer and all four sub-tabs (including the D3 stability charts) work.
+14. **Build** — `npm run lint` and `npm run build` both pass.
 
 ---
 
 ## Troubleshooting
 
 **Speed stays static**
-Make sure the simulator panel shows `LIVE FEED`, not `CONNECTING`. Check the browser console for `BroadcastChannel` errors. If the link is stale for more than 2.5 s, the fallback mock loop takes over until frames return.
+Make sure DATA STREAM MODE is set to `DEMO`. In `PI 5` mode the simulator panel shows `VIEW ONLY` and the dashboard uses the local fallback; in `OFF` mode updates are frozen. In DEMO, the panel should show `LIVE FEED`, not `CONNECTING`. Check the browser console for `BroadcastChannel` errors. If the link is stale for more than 2.5 s, the fallback mock loop takes over until frames return.
 
 **Keyboard controls do nothing**
 The iframe must have focus for raw key events. Click inside the 3D viewport or use the dashboard drive pad, which sends messages directly over the control channel.

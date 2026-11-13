@@ -176,7 +176,7 @@ const generateSeedHistory = (): TelemetryDataPoint[] => {
 
 export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [activeTab, setActiveTab] = useState<NavigationTab>('command-center');
-  const [connectionMode, setConnectionMode] = useState<ConnectionMode>('ONLINE_PI5');
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode>('SIMULATION');
   const [killSwitchActive, setKillSwitchActive] = useState<boolean>(false);
   const [simulatorModalOpen, setSimulatorModalOpen] = useState<boolean>(false);
 
@@ -303,6 +303,7 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const lastHazardAckRef = useRef<number>(0);
   const lastSimMessageTimeRef = useRef<number>(0);
   const telemetryStateRef = useRef<any>({});
+  const connectionModeRef = useRef<ConnectionMode>('SIMULATION');
   const killSwitchRef = useRef<boolean>(false);
   const settingsRef = useRef<AdasSettings | null>(null);
   const modalOpenRef = useRef<boolean>(false);
@@ -464,6 +465,9 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Apply a live telemetry frame from the embedded 3D ADAS world simulation
   const applySimFrame = useCallback((d: any) => {
     if (!d || typeof d !== 'object') return;
+    // The 3D world feeds the dashboard only in SIM DEMO mode. PI 5 and OFF
+    // modes let their own telemetry source own the website values.
+    if (connectionModeRef.current !== 'SIMULATION') return;
     if (d.instance === 'modal' && !modalOpenRef.current) return;
     if (d.instance === 'embedded' && modalOpenRef.current) return;
 
@@ -604,6 +608,7 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       wChannel.onmessage = (event) => {
         if (!event || !event.data) return;
+        if (connectionModeRef.current !== 'SIMULATION') return;
         if (event.data.rainLevel !== undefined) setRainLevelState(event.data.rainLevel);
         if (event.data.fogLevel !== undefined) setFogLevelState(event.data.fogLevel);
       };
@@ -611,6 +616,7 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       cChannel.onmessage = (event) => {
         const d = event?.data;
         if (!d || typeof d !== 'object') return;
+        if (connectionModeRef.current !== 'SIMULATION') return;
         // Night toggled from inside the simulator UI (fullscreen view)
         if (d.type === 'nightState' && typeof d.enabled === 'boolean') {
           setNightMode(prev => (prev === d.enabled ? prev : d.enabled));
@@ -684,9 +690,18 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     isSimRunning
   };
 
+  connectionModeRef.current = connectionMode;
   killSwitchRef.current = killSwitchActive;
   settingsRef.current = settings;
   modalOpenRef.current = simulatorModalOpen;
+
+  // Leaving SIM DEMO mode immediately detaches the 3D telemetry feed.
+  useEffect(() => {
+    if (connectionMode === 'SIMULATION') return;
+    lastSimMessageTimeRef.current = 0;
+    prevAebRef.current = false;
+    setSimulationLinked(false);
+  }, [connectionMode]);
 
   // Main simulation tick loop running stably every 1000ms
   useEffect(() => {
@@ -696,7 +711,8 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setUptimeSeconds(prev => prev + 1);
 
       const st = telemetryStateRef.current;
-      const isSimActive = (Date.now() - lastSimMessageTimeRef.current) < 2500;
+      const isSimActive = connectionMode === 'SIMULATION'
+        && (Date.now() - lastSimMessageTimeRef.current) < 2500;
       setSimulationLinked(isSimActive);
 
       // In simulation or online mode, smoothly fluctuate real-world parameters
