@@ -156,7 +156,7 @@ import { useTelemetry } from '../context/TelemetryContext';
 | `frontend/components/layout/TopHeader.tsx` | Clock, link state, AEB controls, notifications, theme/night toggles |
 | `frontend/components/views/CommandCenterView.tsx` | Primary dashboard and embedded 3D simulation |
 | `frontend/components/views/SensorMatrixView.tsx` | 8-zone proximity matrix and radar |
-| `frontend/components/views/AiPerceptionView.tsx` | Canvas camera simulation, detection overlays, inference controls, embedded road-vision engine |
+| `frontend/components/views/AiPerceptionView.tsx` | Embedded road-vision engine (the whole AI Perception view) |
 | `frontend/components/ai-perception/RoadVehicleDetector.tsx` | Video/canvas perception engine: optical flow, NMS tracking, FCW, BSD, potholes, CSV telemetry |
 | `frontend/components/ai-perception/ConfidenceHistoryChart.tsx` | D3.js temporal stability and spatial hazard-density charts |
 | `frontend/components/ai-perception/HistoricalAlertsSidePanel.tsx` | Critical-alert drawer with jump-to-timestamp and acknowledgements |
@@ -175,7 +175,7 @@ import { useTelemetry } from '../context/TelemetryContext';
 
 ### Road-vision engine (AI Perception)
 
-`AiPerceptionView` keeps the canvas HUD and appends a self-contained video perception console under it. The console is ported from the standalone road-vision prototype and lives entirely in `frontend/components/ai-perception/`:
+`AiPerceptionView` is a thin shell around a self-contained video perception console. The console is ported from the standalone road-vision prototype and lives entirely in `frontend/components/ai-perception/`:
 
 - `RoadVehicleDetector.tsx` — owns the `<video>`, hidden compute canvas and overlay canvas. It tracks vehicles with IoU/NMS and a counting line, finds potholes/pedestrians, derives FCW/BSD/blind-corner/unstructured-road state, and logs 30-frame telemetry.
 - `ConfidenceHistoryChart.tsx` — D3.js temporal confidence plot plus 2D hazard heatmap. Chart width is clamped to at least 320 px so narrow viewports cannot produce negative SVG sizes.

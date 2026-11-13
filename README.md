@@ -62,13 +62,7 @@ The default screen and the home of the 3D world.
 
 ### 03. AI Perception
 
-- Animated forward-camera view rendered on canvas
-- Bounding boxes for vehicles, pedestrians, potholes and traffic signs, streamed from the simulation's detection list
-- Confidence, distance and velocity tags
-- Overlay toggles and confidence threshold
-- Fog/rain, night and anti-glare visualization
-- Inference latency and camera FPS metrics
-- **Road, Vehicle & Hazard Vision Engine** — a video-based perception lab embedded below the HUD:
+- **Road, Vehicle & Hazard Vision Engine** — a video-based perception lab:
   - sample highway video (`public/assets/road-vision/demo.mp4`), custom upload or live webcam
   - optical-flow detection with NMS, IoU tracking, counting line and green road-line tracing
   - vehicles, pedestrians, potholes, blind spots, blind corners and unstructured-road classification
@@ -231,7 +225,7 @@ In DEMO mode, if no simulation frame has arrived for 2.5 seconds, `TelemetryCont
 | Layer | Technology |
 | --- | --- |
 | UI | React 19, TypeScript 7, Tailwind CSS 4 |
-| Charts | Recharts 3, D3.js 7 (AI Perception vision analytics) |
+| Charts | Recharts 3 (dashboard views), D3.js 7 (AI Perception vision analytics) |
 | Icons | Lucide React |
 | Animation | CSS keyframes, `motion` |
 | 3D world | Three.js 0.187 (loaded in the iframe), OrbitControls |
@@ -541,7 +535,7 @@ Use this after changes to the simulation or context:
 10. **Fullscreen** — open the simulator modal; the embedded instance pauses, the modal instance drives telemetry. Close it; the embedded instance resumes.
 11. **Logs** — AEB transitions appear in Diagnostics & Logs.
 12. **Mode switch** — select `PI 5`: the simulator chip changes to `VIEW ONLY` and website values stop following the 3D world. Select `DEMO`: the chip returns to `LIVE FEED` within a second. Select `OFF`: all updates freeze.
-13. **Road-vision engine** — open AI Perception, scroll to the vision engine, press **Play & Detect**, and confirm video overlays, the alert drawer and all four sub-tabs (including the D3 stability charts) work.
+13. **Road-vision engine** — open AI Perception, press **Play & Detect**, and confirm video overlays, the alert drawer and all four sub-tabs (including the D3 stability charts) work.
 14. **Build** — `npm run lint` and `npm run build` both pass.
 
 ---
