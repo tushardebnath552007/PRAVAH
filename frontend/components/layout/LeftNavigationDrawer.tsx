@@ -23,9 +23,10 @@ export const LeftNavigationDrawer: React.FC = () => {
   const { 
     activeTab, 
     setActiveTab, 
-    connectionMode, 
-    setConnectionMode, 
-    killSwitchActive, 
+    connectionMode,
+    setConnectionMode,
+    hardwareLinked,
+    killSwitchActive,
     toggleKillSwitch,
     setSimulatorModalOpen,
     cpuLoad,
@@ -294,6 +295,19 @@ export const LeftNavigationDrawer: React.FC = () => {
             <span className="text-blue-600 dark:text-cyan-400 font-bold">
               {connectionMode === 'ONLINE_PI5' ? 'PI 5 LIVE' : connectionMode === 'SIMULATION' ? 'SIM DEMO' : 'OFFLINE'}
             </span>
+          </div>
+          <div className="text-[9px] font-mono mb-1 h-4">
+            {connectionMode === 'SIMULATION' && (
+              <span className="text-emerald-600 dark:text-emerald-400">SOURCE: RECORDED DATASET · 3D WORLD VIEW-ONLY</span>
+            )}
+            {connectionMode === 'OFFLINE' && (
+              <span className="text-sky-700 dark:text-cyan-300">SOURCE: 3D SIMULATION</span>
+            )}
+            {connectionMode === 'ONLINE_PI5' && (
+              <span className={hardwareLinked ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>
+                {hardwareLinked ? 'SOURCE: PI 5 HARDWARE · LIVE' : 'PI 5 NOT CONNECTED · FROZEN'}
+              </span>
+            )}
           </div>
           <div className="grid grid-cols-3 gap-1 p-1 bg-white dark:bg-slate-900/80 rounded-lg border border-slate-200 dark:border-slate-800 text-[10px] font-mono">
             {(['ONLINE_PI5', 'SIMULATION', 'OFFLINE'] as ConnectionMode[]).map((mode) => (

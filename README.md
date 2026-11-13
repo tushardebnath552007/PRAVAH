@@ -27,7 +27,7 @@ The interface is built for a Raspberry Pi 5-class vehicle node: CAN 2.0B telemet
 
 ## What the site does
 
-PRAVAH is an operator console for a live vehicle telemetry feed, with a 3D world as the live source when DATA STREAM MODE is set to DEMO.
+PRAVAH is an operator console for a live vehicle telemetry feed, with three selectable sources: a recorded telemetry dataset (DEMO), an embedded 3D simulation (OFF), or the Pi 5 node's hardware telemetry API (PI 5).
 
 - **Live telemetry** — speed, steering, gear, heading, LiDAR range, detection list, 8-zone proximity matrix, AEB/FCW state, servo position, IMU, GPS, and Raspberry Pi 5 hardware load.
 - **3D driving world** — a Three.js city loop with traffic, pedestrians, potholes, rain, fog, night driving and oncoming headlights.
@@ -36,7 +36,7 @@ PRAVAH is an operator console for a live vehicle telemetry feed, with a 3D world
 - **Data exports** — CSV/JSON snapshots of telemetry history and sensor matrices.
 - **Responsive dual theme** — daylight cockpit theme and a dark cyber telemetry theme.
 
-Everything the dashboard displays is driven by the embedded simulation **only while DATA STREAM MODE is set to DEMO**. In PI 5 mode the 3D world stays visible as a view-only preview and the local telemetry fallback owns the dashboard; in OFF mode updates stop and the last values remain on screen.
+Everything the dashboard displays is driven by one of three sources, selected by the DATA STREAM MODE control in the left drawer. In DEMO the dashboard plays back a recorded telemetry dataset; in OFF the embedded 3D simulation drives it; in PI 5 the Pi 5 node's live telemetry API drives it — and the Pi 5 connection is required, otherwise the dashboard freezes.
 
 ---
 
@@ -98,7 +98,7 @@ The default screen and the home of the 3D world.
 ### Global controls
 
 - **Kill switch** — locks actuators into a safe state and freezes the simulation feed.
-- **Data stream mode** — selects which source owns the dashboard: `DEMO` (3D simulation), `PI 5` (local fallback feed) or `OFF` (freeze updates).
+- **Data stream mode** — selects which source owns the dashboard: `DEMO` (recorded dataset), `PI 5` (Pi 5 node hardware API) or `OFF` (3D simulation).
 - **Manual AEB** — trigger or release emergency braking from the header or the simulator panel.
 - **Daylight mode** — switches the entire site between the daylight cockpit theme and the dark telemetry theme.
 - **Notification drawer** — recent events and diagnostic alerts.
@@ -112,24 +112,38 @@ The world lives at `public/assets/simulation/adas-world.html`. It is a self-cont
 
 ### Data stream modes
 
-The DATA STREAM MODE selector in the left drawer decides whether the 3D world is allowed to drive the dashboard.
+The DATA STREAM MODE selector in the left drawer decides which source owns the dashboard. The three modes are mutually exclusive — exactly one source feeds the site at a time.
 
-| Mode | UI label | Behaviour |
-| --- | --- | --- |
-| `SIMULATION` | **DEMO** | The 3D world drives every telemetry parameter |
-| `ONLINE_PI5` | **PI 5** | The 3D world is still visible but view-only; the dashboard runs the local telemetry fallback |
-| `OFFLINE` | **OFF** | Dashboard updates stop and the last values remain frozen |
+| Mode | UI label | Source of truth | Behaviour |
+| --- | --- | --- | --- |
+| `SIMULATION` | **DEMO** | Recorded telemetry dataset (`public/assets/demo-telemetry.json`) | Dashboard replays a 60 s recorded highway run on a loop (gauges, zones, detections, FCW/AEB, node metrics) |
+| `ONLINE_PI5` | **PI 5** | Pi 5 node hardware telemetry API (`GET /api/telemetry`) | Website updates only while the Pi 5 node responds; without a link the dashboard freezes completely |
+| `OFFLINE` | **OFF** | Embedded 3D ADAS simulation | The 3D world drives every parameter; if no frame arrives, values freeze |
 
-DEMO is the default. Switching away from DEMO immediately detaches the simulation feed; switching back reconnects as soon as the next frame arrives (within ~100 ms).
+DEMO is the default and works out of the box with no hardware and no interaction. The simulator panel is visible in every mode but only interactive as a driver in OFF mode; in DEMO and PI 5 it shows `VIEW ONLY`. The dashboard freezes (rather than inventing telemetry) whenever its selected source is unavailable or silent.
 
-### How it drives the dashboard
+### How each source feeds the dashboard
+
+**DEMO (recorded dataset)**
+
+1. `TelemetryContext` loads `/assets/demo-telemetry.json` — a recorded highway run with a full ADAS event arc (cruise → pothole → pedestrian → emergency braking → recovery).
+2. The 120 frames replay on a loop through the same frame-application pipeline as live sources.
+3. Every view reads the shared state, so the dashboard follows the recording continuously.
+
+**OFF (3D simulation)**
 
 1. The simulator advances physics, traffic, weather and ADAS inference on a ~33 ms engine interval.
 2. It broadcasts a telemetry frame on `BroadcastChannel('adas_telemetry_channel')` at most every 100 ms.
-3. `TelemetryContext` accepts the frame only in DEMO mode, filters it by instance (`embedded` vs `modal`), and writes it into React state.
+3. `TelemetryContext` accepts the frame only in OFF mode, filters it by instance (`embedded` vs `modal`), and writes it into React state.
 4. Every view reads that shared state, so the dashboard follows the 3D world continuously.
 
-The simulation keeps running while the iframe is not visible or not painting, because physics runs on an interval and rendering runs separately on `requestAnimationFrame`.
+**PI 5 (Pi 5 node hardware)**
+
+1. `TelemetryContext` polls `GET /api/telemetry` on the Pi 5 node once per second.
+2. A valid snapshot updates the dashboard (flat Pi 5 metrics plus forward LiDAR → zone 1); the hardware does not report potholes/pedestrian objects, so the object list stays unchanged in this mode.
+3. If the node does not respond, no values change — the dashboard is frozen until the link recovers. The Pi 5 LINKED badge in the left drawer shows the current link state.
+
+The simulation keeps running while the iframe is not visible or not painting (OFF mode), because physics runs on an interval and rendering runs separately on `requestAnimationFrame`.
 
 ### What the simulation feeds
 
@@ -163,7 +177,7 @@ Controls inside the dashboard (and their simulator keys):
 | Weather | Rain/fog sliders on Data Sheet | Simulator sliders |
 | Fullscreen | Expand button | — |
 
-The site is authoritative for weather and night mode. Slider changes are pushed into both the embedded and modal simulation instances, and the simulator echoes them back so both stay in sync. Simulator-originated weather/night changes are accepted only in DEMO mode.
+The site is authoritative for weather and night mode. Slider changes are pushed into both the embedded and modal simulation instances, and the simulator echoes them back so both stay in sync. Simulator-originated weather/night changes are accepted only in OFF mode (when the 3D world is streaming).
 
 ### Two simulation instances
 
@@ -172,9 +186,15 @@ The site is authoritative for weather and night mode. Slider changes are pushed 
 
 Each instance tags its telemetry with `instance`. The context ignores modal frames while the modal is closed and ignores embedded frames while the modal is open. This prevents two engines from fighting over the same dashboard values.
 
-### Fallback behavior
+### Source availability
 
-In DEMO mode, if no simulation frame has arrived for 2.5 seconds, `TelemetryContext` marks the link as stale and starts a lightweight mock cruise loop so charts and gauges stay populated until the simulation reconnects. PI 5 mode always uses that fallback loop; OFF mode stops the update loop entirely. When the kill switch is active, incoming frames are acknowledged for link status but do not update telemetry.
+There is deliberately no mock telemetry generator. Every mode has exactly one source, and the site never invents values when it is unavailable:
+
+- **DEMO** — always available. If the recorded dataset fails to load, a warning is logged and the dashboard stays frozen.
+- **OFF** — 3D frames must arrive for the dashboard to move; after 2.5 s without a frame the site is marked stale and frozen.
+- **PI 5** — `GET /api/telemetry` must answer successfully; otherwise nothing updates and the left drawer shows `PI 5 NOT CONNECTED · FROZEN`.
+
+When the kill switch is active, incoming frames are acknowledged for link status but do not update telemetry. Charts and gauges reflect the selected source and stop moving entirely when it is gone.
 
 ---
 
@@ -266,6 +286,7 @@ No database or external telemetry service is required. All state is in memory or
 │       └── exportCsv.ts
 ├── public/
 │   └── assets/
+│       ├── demo-telemetry.json  # Recorded highway telemetry replayed by DATA STREAM MODE DEMO
 │       ├── road-vision/
 │       │   └── demo.mp4          # Sample highway video for the AI Perception vision engine
 │       └── simulation/
@@ -482,7 +503,7 @@ All responses follow:
 { "status": "success", "data": { } }
 ```
 
-> The backend engine is an independent 1 Hz simulation used by the REST surface. In DEMO mode, the dashboard's live values come from the browser 3D world through `BroadcastChannel`, not from `/api/telemetry`. This is intentional: the 3D world is the interactive source of truth while DEMO is selected, while the API provides a headless telemetry surface for integrations and diagnostics.
+> The backend engine is an independent 1 Hz simulation used by the REST surface. When DATA STREAM MODE is `PI 5`, the dashboard reads `/api/telemetry` as its live source — otherwise the API only serves integrations and diagnostics, and the dashboard uses DEMO or OFF sources instead.
 
 ---
 
@@ -521,9 +542,9 @@ Serving behavior:
 
 ## Verification checklist
 
-Use this after changes to the simulation or context:
+Use this after changes to the simulation or context. Items 2–11 verify with DATA STREAM MODE switched to **OFF** so the 3D world owns the dashboard; use **DEMO** for dataset-driven observation.
 
-1. **Boot** — Command Center shows `LIVE FEED`; speed and front range move without input (DEMO is the default mode).
+1. **Boot** — Command Center loads with DATA STREAM MODE `DEMO` (default); speed and front range move because the recorded dataset is replaying. The simulator panel shows `VIEW ONLY`.
 2. **Drive** — hold ▲; speed rises. Hold ◀/▶; steering and heading change. Press BRAKE; speed drops.
 3. **Pause/resume** — pause freezes speed at 0 and reports `FCW: SIMULATION PAUSED`; resume continues.
 4. **AEB** — press the shield button; speed goes to 0, servo shows 90°, FCW reports AEB. Release restores normal drive.
@@ -534,7 +555,7 @@ Use this after changes to the simulation or context:
 9. **Tabs** — switch tabs; telemetry keeps updating and charts keep appending.
 10. **Fullscreen** — open the simulator modal; the embedded instance pauses, the modal instance drives telemetry. Close it; the embedded instance resumes.
 11. **Logs** — AEB transitions appear in Diagnostics & Logs.
-12. **Mode switch** — select `PI 5`: the simulator chip changes to `VIEW ONLY` and website values stop following the 3D world. Select `DEMO`: the chip returns to `LIVE FEED` within a second. Select `OFF`: all updates freeze.
+12. **Mode switch** — in `DEMO` the simulator chip shows `VIEW ONLY` and values come from the recorded dataset. In `PI 5` the chip shows `VIEW ONLY` and values come from the Pi 5 node (the left drawer shows `SOURCE: PI 5 HARDWARE · LIVE` or `PI 5 NOT CONNECTED · FROZEN`). In `OFF` the chip shows `LIVE FEED` and the dashboard follows the 3D world; `CONNECTING` if it has not sent a frame within 2.5 s.
 13. **Road-vision engine** — open AI Perception, press **Play & Detect**, and confirm video overlays, the alert drawer and all four sub-tabs (including the D3 stability charts) work.
 14. **Build** — `npm run lint` and `npm run build` both pass.
 
@@ -543,7 +564,7 @@ Use this after changes to the simulation or context:
 ## Troubleshooting
 
 **Speed stays static**
-Make sure DATA STREAM MODE is set to `DEMO`. In `PI 5` mode the simulator panel shows `VIEW ONLY` and the dashboard uses the local fallback; in `OFF` mode updates are frozen. In DEMO, the panel should show `LIVE FEED`, not `CONNECTING`. Check the browser console for `BroadcastChannel` errors. If the link is stale for more than 2.5 s, the fallback mock loop takes over until frames return.
+Check the DATA STREAM MODE in the left drawer. In `OFF` the 3D simulation must stream (chip shows `LIVE FEED`, not `CONNECTING`); check the browser console for `BroadcastChannel` errors. In `PI 5` the Pi 5 node must respond at `/api/telemetry` — otherwise the site is intentionally frozen and shows `PI 5 NOT CONNECTED · FROZEN` in the left drawer. In `DEMO` the recorded dataset replay must be running — reload the page if it failed to load (check the console for `/assets/demo-telemetry.json` errors).
 
 **Keyboard controls do nothing**
 The iframe must have focus for raw key events. Click inside the 3D viewport or use the dashboard drive pad, which sends messages directly over the control channel.

@@ -160,7 +160,7 @@ export const AdasWorldSimulation: React.FC<AdasWorldSimulationProps> = ({
   };
 
   const src = `/assets/simulation/adas-world.html?embed=${embed ? '1' : '0'}&instance=${instance}`;
-  const simControlsDashboard = connectionMode === 'SIMULATION';
+  const simControlsDashboard = connectionMode === 'OFFLINE';
   const linkLive = simControlsDashboard && simulationLinked && isSimRunning;
   const statusLabel = !simControlsDashboard
     ? 'VIEW ONLY'
@@ -193,7 +193,7 @@ export const AdasWorldSimulation: React.FC<AdasWorldSimulationProps> = ({
             </div>
           </div>
           <span
-            title={!simControlsDashboard ? 'Switch DATA STREAM MODE to DEMO to let the 3D world drive the dashboard' : undefined}
+            title={!simControlsDashboard ? 'Switch DATA STREAM MODE to OFF to let the 3D world drive the dashboard' : undefined}
             className={`ml-1 flex items-center gap-1 px-1.5 py-0.5 rounded border font-mono text-[9px] font-bold ${
               linkLive
                 ? 'text-emerald-500 border-emerald-500/40 bg-emerald-500/10'

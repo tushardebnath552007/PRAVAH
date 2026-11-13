@@ -70,6 +70,7 @@ interface TelemetryContextType {
   isSimRunning: boolean;
   toggleSimRunning: () => void;
   simulationLinked: boolean;
+  hardwareLinked: boolean;
 
   // Hardware / Pi 5 stats
   cpuTemp: number;
@@ -240,6 +241,7 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   });
   const [isSimRunning, setIsSimRunning] = useState<boolean>(true);
   const [simulationLinked, setSimulationLinked] = useState<boolean>(false);
+  const [hardwareLinked, setHardwareLinked] = useState<boolean>(false);
   const [glareDetected, setGlareDetected] = useState<boolean>(false);
 
   // Sync Daylight Mode with HTML class & storage
@@ -309,6 +311,10 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const modalOpenRef = useRef<boolean>(false);
   const prevAebRef = useRef<boolean>(false);
   const lastSimAebLogRef = useRef<number>(0);
+  const isSimRunningRef = useRef<boolean>(true);
+  const hardwareLinkedRef = useRef<boolean>(false);
+  const demoFramesRef = useRef<any[] | null>(null);
+  const demoFrameIndexRef = useRef<number>(0);
 
   // Helper to add event logs
   const addEventLog = useCallback((log: Omit<DiagnosticEventLog, 'id'>) => {
@@ -462,18 +468,10 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     lastHazardAckRef.current = Date.now();
   }, []);
 
-  // Apply a live telemetry frame from the embedded 3D ADAS world simulation
-  const applySimFrame = useCallback((d: any) => {
+  // Shared application of a telemetry frame onto dashboard state.
+  // Used by the recorded DEMO dataset replay and by the 3D simulation (OFF mode).
+  const applyTelemetryFrame = useCallback((d: any) => {
     if (!d || typeof d !== 'object') return;
-    // The 3D world feeds the dashboard only in SIM DEMO mode. PI 5 and OFF
-    // modes let their own telemetry source own the website values.
-    if (connectionModeRef.current !== 'SIMULATION') return;
-    if (d.instance === 'modal' && !modalOpenRef.current) return;
-    if (d.instance === 'embedded' && modalOpenRef.current) return;
-
-    lastSimMessageTimeRef.current = Date.now();
-    setSimulationLinked(true);
-    if (killSwitchRef.current) return;
 
     const clampNum = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
     const frameSpeed = typeof d.speed === 'number' ? d.speed : 0;
@@ -566,6 +564,17 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       });
     }
 
+    if (typeof d.inferenceLatency === 'number') setInferenceLatency(clampNum(d.inferenceLatency, 0, 99));
+    if (typeof d.cameraFps === 'number') setCameraFps(clampNum(d.cameraFps, 1, 240));
+    if (typeof d.cpuLoad === 'number') setCpuLoad(clampNum(d.cpuLoad, 0, 100));
+    if (typeof d.cpuTemp === 'number') setCpuTemp(clampNum(d.cpuTemp, -10, 125));
+    if (typeof d.ramUsage === 'number') setRamUsage(clampNum(d.ramUsage, 0, 100));
+    if (typeof d.canBusLoad === 'number') setCanBusLoad(clampNum(d.canBusLoad, 0, 100));
+    if (typeof d.latencyMs === 'number') setLatencyMs(clampNum(d.latencyMs, 0, 300));
+    if (typeof d.packetDeliveryRate === 'number') setPacketDeliveryRate(clampNum(d.packetDeliveryRate, 0, 100));
+    if (typeof d.lidarSnr === 'number') setLidarSnr(clampNum(d.lidarSnr, 0, 60));
+    if (typeof d.lidarSignal === 'number') setLidarSignal(clampNum(d.lidarSignal, 0, 100));
+
     const activeSettings = settingsRef.current;
     if (activeSettings) {
       setLkaActive(activeSettings.lkaEnabled && Math.abs(frameSteer) < activeSettings.lkaDriftThresholdDeg);
@@ -583,12 +592,210 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         timestamp: new Date().toLocaleTimeString(),
         severity: 'CRITICAL',
         category: 'AEB',
-        message: `3D SIMULATION: Forward obstacle inside ${frontDistance}m. Automated emergency braking engaged.`,
+        message: `AUTOMATED BRAKING: Forward obstacle inside ${frontDistance}m. Emergency braking engaged.`,
         metricValue: `Distance: ${frontDistance}m | Speed: ${Math.round(frameSpeed)} km/h`,
       });
     }
     prevAebRef.current = aebNow;
   }, [addEventLog]);
+
+  // Apply a live telemetry frame from the 3D ADAS world simulation.
+  // The 3D world owns the dashboard only in OFF mode; DEMO replays a recorded
+  // dataset and PI 5 polls the Pi 5 node instead.
+  const applySimFrame = useCallback((d: any) => {
+    if (!d || typeof d !== 'object') return;
+    if (connectionModeRef.current !== 'OFFLINE') return;
+    if (d.instance === 'modal' && !modalOpenRef.current) return;
+    if (d.instance === 'embedded' && modalOpenRef.current) return;
+
+    lastSimMessageTimeRef.current = Date.now();
+    setSimulationLinked(true);
+    if (killSwitchRef.current) return;
+
+    applyTelemetryFrame(d);
+  }, [applyTelemetryFrame]);
+
+  // Map a flat Pi 5 hardware snapshot (/api/telemetry) onto dashboard state.
+  // Only scalars the Pi 5 node actually reports are applied; weather/night stay site-owned.
+  const applyPiSnapshot = useCallback((s: any) => {
+    if (!s || typeof s !== 'object') return;
+    const clampNum = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+    const num = (v: any, fallback: number) =>
+      (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
+
+    setSpeed(prev => {
+      const next = num(s.speed, prev);
+      return Math.abs(prev - next) < 0.15 ? prev : Number(next.toFixed(1));
+    });
+    setSteerAngle(prev => {
+      const next = num(s.steerAngle, prev);
+      return Math.abs(prev - next) < 0.5 ? prev : next;
+    });
+    if (s.gear === 'P' || s.gear === 'R' || s.gear === 'N' || s.gear === 'D') setGear(s.gear);
+    if (typeof s.heading === 'number') {
+      setHeading(Number(((s.heading % 360) + 360) % 360));
+    }
+    const front = clampNum(num(s.lidarDistance, 12), 0, 12);
+    setLidarDistance(front);
+    setLidarSignal(clampNum(num(s.lidarSignal, 94), 0, 100));
+    setLidarSnr(clampNum(num(s.lidarSnr, 36), 0, 60));
+    setHealthScore(clampNum(num(s.healthScore, 98), 0, 100));
+    if (typeof s.fcwState === 'string') setFcwState(s.fcwState);
+    const aebNow = !!s.aebActive;
+    setAebActive(aebNow);
+    if (typeof s.servoAngle === 'number') setServoAngle(clampNum(s.servoAngle, 0, 90));
+    setLkaActive(!!s.lkaActive);
+    setAccActive(!!s.accActive);
+    setAgsActive(!!s.agsActive);
+    setCameraFps(clampNum(num(s.cameraFps, 60), 1, 240));
+    setInferenceLatency(clampNum(num(s.inferenceLatency, 14), 0, 99));
+    setCpuTemp(clampNum(num(s.cpuTemp, 46), -10, 125));
+    setCpuLoad(clampNum(num(s.cpuLoad, 20), 0, 100));
+    setRamUsage(clampNum(num(s.ramUsage, 40), 0, 100));
+    setLatencyMs(clampNum(num(s.latencyMs, 10), 0, 300));
+    setPacketDeliveryRate(clampNum(num(s.packetDeliveryRate, 99), 0, 100));
+    if (typeof s.uptimeSeconds === 'number') setUptimeSeconds(s.uptimeSeconds);
+    setCanBusLoad(clampNum(num(s.canBusLoad, 30), 0, 100));
+
+    if (s.imu && typeof s.imu === 'object') {
+      setImu({
+        ax: Number(s.imu.ax) || 0,
+        ay: Number(s.imu.ay) || 0,
+        az: Number(s.imu.az) || 0.99,
+        gx: Number(s.imu.gx) || 0,
+        gy: Number(s.imu.gy) || 0,
+        gz: Number(s.imu.gz) || 0,
+      });
+    }
+    if (s.gps && typeof s.gps === 'object') {
+      setGps({
+        lat: Number(s.gps.lat) || 28.6139,
+        lng: Number(s.gps.lng) || 77.209,
+        satellites: Number(s.gps.satellites) || 14,
+        alt: Number(s.gps.alt) || 216,
+        fix: s.gps.fix !== false,
+      });
+    }
+
+    // The hardware's forward LiDAR drives zone 1; other zones stay untouched.
+    setProximityZones(prev => prev.map(zone => {
+      if (zone.id !== 'z1') return zone;
+      const distance = Number(clampNum(front, 0.05, zone.maxRange).toFixed(2));
+      const ratio = distance / zone.maxRange;
+      let threatLevel: ThreatLevel;
+      if (ratio < 0.18) threatLevel = 'CRITICAL';
+      else if (ratio < 0.35) threatLevel = 'WARNING';
+      else if (ratio < 0.6) threatLevel = 'CAUTION';
+      else threatLevel = 'CLEAR';
+      const triggered = threatLevel === 'CRITICAL' || threatLevel === 'WARNING';
+      return {
+        ...zone,
+        distance,
+        obstacleDetected: triggered,
+        threatLevel,
+        lastTriggerTime: triggered
+          ? new Date().toLocaleTimeString('en-US', { hour12: false })
+          : zone.lastTriggerTime,
+      };
+    }));
+
+    // Announce automatic emergency braking transitions once
+    if (aebNow && !prevAebRef.current && Date.now() - lastSimAebLogRef.current > 3000) {
+      lastSimAebLogRef.current = Date.now();
+      audioSynth.playEmergencyAlarm();
+      if (settingsRef.current?.voiceAlertsEnabled) {
+        audioSynth.speakAlert('Warning: Critical Distance! Emergency Brake Applied!');
+      }
+      addEventLog({
+        timestamp: new Date().toLocaleTimeString(),
+        severity: 'CRITICAL',
+        category: 'AEB',
+        message: `PI 5 HARDWARE: Forward obstacle inside ${front.toFixed(1)}m. Emergency braking engaged.`,
+        metricValue: `Distance: ${front.toFixed(1)}m | Speed: ${Math.round(num(s.speed, 0))} km/h`,
+      });
+    }
+    prevAebRef.current = aebNow;
+  }, [addEventLog]);
+
+  // DEMO mode: replay the recorded telemetry dataset on a loop
+  useEffect(() => {
+    if (connectionMode !== 'SIMULATION') return;
+    let cancelled = false;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+
+    const start = (frames: any[]) => {
+      if (cancelled || !Array.isArray(frames) || frames.length === 0) return;
+      demoFramesRef.current = frames;
+      intervalId = setInterval(() => {
+        if (!isSimRunningRef.current) return;
+        const frame = frames[demoFrameIndexRef.current % frames.length];
+        demoFrameIndexRef.current = (demoFrameIndexRef.current + 1) % frames.length;
+        if (killSwitchRef.current) return;
+        applyTelemetryFrame(frame);
+      }, 500);
+    };
+
+    if (demoFramesRef.current) {
+      start(demoFramesRef.current);
+    } else {
+      fetch('/assets/demo-telemetry.json')
+        .then((res) => {
+          if (!res.ok) throw new Error(String(res.status));
+          return res.json();
+        })
+        .then((payload) => {
+          if (!cancelled && Array.isArray(payload?.frames)) start(payload.frames);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          addEventLog({
+            timestamp: new Date().toLocaleTimeString(),
+            severity: 'WARNING',
+            category: 'SYSTEM',
+            message: 'DEMO recorded dataset could not be loaded; dashboard values stay frozen.',
+          });
+        });
+    }
+
+    return () => {
+      cancelled = true;
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [connectionMode, applyTelemetryFrame, addEventLog]);
+
+  // PI 5 mode: poll the Pi 5 node's telemetry API; values freeze when unreachable
+  useEffect(() => {
+    if (connectionMode !== 'ONLINE_PI5') {
+      hardwareLinkedRef.current = false;
+      setHardwareLinked(false);
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/telemetry', { cache: 'no-store' });
+        if (!res.ok) throw new Error(String(res.status));
+        const json = await res.json();
+        const s = json?.data;
+        if (!s || typeof s !== 'object') throw new Error('invalid payload');
+        if (cancelled) return;
+        hardwareLinkedRef.current = true;
+        setHardwareLinked(true);
+        if (killSwitchRef.current) return;
+        applyPiSnapshot(s);
+      } catch {
+        if (cancelled) return;
+        hardwareLinkedRef.current = false;
+        setHardwareLinked(false);
+      }
+    };
+    void poll();
+    const id = setInterval(poll, 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [connectionMode, applyPiSnapshot]);
 
   // BroadcastChannel Setup for inter-tab / simulator synchronization
   useEffect(() => {
@@ -608,7 +815,7 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       wChannel.onmessage = (event) => {
         if (!event || !event.data) return;
-        if (connectionModeRef.current !== 'SIMULATION') return;
+        if (connectionModeRef.current !== 'OFFLINE') return;
         if (event.data.rainLevel !== undefined) setRainLevelState(event.data.rainLevel);
         if (event.data.fogLevel !== undefined) setFogLevelState(event.data.fogLevel);
       };
@@ -616,7 +823,7 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       cChannel.onmessage = (event) => {
         const d = event?.data;
         if (!d || typeof d !== 'object') return;
-        if (connectionModeRef.current !== 'SIMULATION') return;
+        if (connectionModeRef.current !== 'OFFLINE') return;
         // Night toggled from inside the simulator UI (fullscreen view)
         if (d.type === 'nightState' && typeof d.enabled === 'boolean') {
           setNightMode(prev => (prev === d.enabled ? prev : d.enabled));
@@ -646,11 +853,13 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const frictionMu = Number(Math.max(0.18, 0.85 - (roadWetness * 0.0062)).toFixed(2));
   const hydroplaningRisk = roadWetness > 65 && speed > 50 ? 'HIGH' : roadWetness > 35 && speed > 40 ? 'MEDIUM' : 'LOW';
 
-  // Anti-glare check (fallback only when the 3D simulation is not streaming)
+  // Anti-glare fallback. When the 3D world is actively driving (OFF mode), the sim
+  // owns glare state; the dataset and Pi 5 sources don't report it, so apply locally.
   useEffect(() => {
-    if (Date.now() - lastSimMessageTimeRef.current < 2500) return;
+    const simStreaming = connectionMode === 'OFFLINE'
+      && (Date.now() - lastSimMessageTimeRef.current) < 2500;
+    if (simStreaming) return;
     if (nightMode && settings.antiGlareShieldAuto) {
-      // If oncoming vehicles present at night
       const oncoming = detectedObjects.some(o => o.type === 'VEHICLE' && o.distance < 25);
       setGlareDetected(oncoming);
       setAgsActive(oncoming);
@@ -658,7 +867,7 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setGlareDetected(false);
       setAgsActive(false);
     }
-  }, [nightMode, detectedObjects, settings.antiGlareShieldAuto]);
+  }, [connectionMode, nightMode, detectedObjects, settings.antiGlareShieldAuto]);
 
   // Keep telemetryStateRef in sync with latest state
   telemetryStateRef.current = {
@@ -694,172 +903,41 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   killSwitchRef.current = killSwitchActive;
   settingsRef.current = settings;
   modalOpenRef.current = simulatorModalOpen;
+  isSimRunningRef.current = isSimRunning;
+  hardwareLinkedRef.current = hardwareLinked;
 
-  // Leaving SIM DEMO mode immediately detaches the 3D telemetry feed.
+  // Leaving the 3D-driven mode (OFF) detaches the simulation feed immediately.
   useEffect(() => {
-    if (connectionMode === 'SIMULATION') return;
+    if (connectionMode === 'OFFLINE') return;
     lastSimMessageTimeRef.current = 0;
     prevAebRef.current = false;
     setSimulationLinked(false);
   }, [connectionMode]);
 
-  // Main simulation tick loop running stably every 1000ms
+  // Main dashboard tick running stably every 1000ms.
+  // The active source owns the data; without an active source the dashboard stays frozen.
   useEffect(() => {
-    if (connectionMode === 'OFFLINE') return;
-
     const interval = setInterval(() => {
+      const now = Date.now();
+      const mode = connectionMode;
+      const simFresh = (now - lastSimMessageTimeRef.current) < 2500;
+
+      if (mode === 'ONLINE_PI5' && !hardwareLinkedRef.current) return; // Pi 5 not connected: frozen
+      if (mode === 'OFFLINE' && !simFresh) return;                     // 3D telemetry feed absent: frozen
+
       setUptimeSeconds(prev => prev + 1);
 
       const st = telemetryStateRef.current;
-      const isSimActive = connectionMode === 'SIMULATION'
-        && (Date.now() - lastSimMessageTimeRef.current) < 2500;
+      const isSimActive = mode === 'OFFLINE' && simFresh;
       setSimulationLinked(isSimActive);
 
-      // In simulation or online mode, smoothly fluctuate real-world parameters
-      if (!killSwitchActive) {
-        if (!isSimRunning) {
-          setSpeed(0);
-          setGear('P');
-          setSteerAngle(0);
-          setServoAngle(0);
-          setFcwState('FCW: SIMULATION PAUSED');
-        } else if (!isSimActive) {
-          // Only generate mock cruising changes if real 3D simulator is not actively broadcasting
-          if (!st.aebActive) {
-            setGear('D');
-            setSpeed(prev => {
-              const delta = (Math.random() - 0.48) * 3;
-              return Math.min(75, Math.max(20, Math.round(prev + delta)));
-            });
-            setSteerAngle(prev => {
-              const s = Number((prev * 0.7 + (Math.random() * 6 - 3)).toFixed(1));
-              return Math.min(25, Math.max(-25, s));
-            });
-            setHeading(prev => (prev + (Math.random() * 1.5 - 0.75) + 360) % 360);
-            setServoAngle(prev => Math.min(45, Math.max(0, Math.round(prev * 0.6 + (Math.random() * 6)))));
-          } else {
-            setServoAngle(90);
-            setSpeed(0);
-          }
-
-          // TF-Luna LiDAR Distance fluctuation based on forward traffic
-          setLidarDistance(prev => {
-            if (st.aebActive) return Math.min(prev, 1.2);
-            const noise = (Math.random() - 0.49) * 0.6;
-            let newDist = prev + noise;
-            if (newDist > 16) newDist = 14;
-            if (newDist < 0.8) newDist = 1.4;
-            return Number(newDist.toFixed(2));
-          });
-        }
-
-        // Compute LiDAR SNR under atmospheric weather attenuation
-        const weatherLoss = (st.fogLevel * 3.2) + (st.rainLevel * 2.1);
-        setLidarSnr(Math.max(4, Math.round(44 - (st.lidarDistance * 1.8) - weatherLoss + (Math.random() * 2 - 1))));
-        setLidarSignal(Math.max(15, Math.min(99, Math.round(100 - (st.lidarDistance * 3.5) - weatherLoss))));
-
-        // Vision frame rate and inference latency
-        const jitter = (Math.random() * 1.2 - 0.6);
-        setInferenceLatency(Number(Math.max(11, 13.8 + (st.detectedObjects.length * 0.9) + jitter).toFixed(1)));
-        setCameraFps(Math.round(59 + Math.random() * 3));
-
-        // CAN Bus load
-        setCanBusLoad(Number((28 + (st.speed * 0.35) + (st.aebActive ? 25 : 0) + (Math.random() * 4)).toFixed(1)));
-
-        // Pi 5 Core metrics
-        setCpuLoad(Number((22 + (st.detectedObjects.length * 3.5) + (Math.random() * 4)).toFixed(1)));
-        setCpuTemp(Number((46 + (st.fogLevel > 2 ? 3 : 0) + (Math.random() * 2.5)).toFixed(1)));
-        setRamUsage(Number((41 + (Math.random() * 2)).toFixed(1)));
-        setLatencyMs(Math.round(10 + Math.random() * 5));
-
-        // Update 360° Proximity Zones (mock fallback only when no live 3D simulation)
-        if (!isSimActive) {
-          setProximityZones(prev => prev.map(zone => {
-            let dist = zone.distance;
-            let threat: ThreatLevel = 'SAFE';
-
-            if (zone.id === 'z1') {
-              dist = st.lidarDistance;
-              if (dist < 1.0) threat = 'CRITICAL';
-              else if (dist < 2.0) threat = 'WARNING';
-              else if (dist < 4.0) threat = 'CAUTION';
-              else threat = 'CLEAR';
-            } else {
-              const delta = (Math.random() - 0.5) * 0.15;
-              dist = Math.max(zone.minClearance, Math.min(zone.maxRange, Number((dist + delta).toFixed(2))));
-              if (dist < 0.9) threat = 'WARNING';
-              else if (dist < 1.8) threat = 'CAUTION';
-              else threat = 'SAFE';
-            }
-
-            return {
-              ...zone,
-              distance: dist,
-              obstacleDetected: threat !== 'CLEAR' && threat !== 'SAFE',
-              threatLevel: threat,
-              lastTriggerTime: threat === 'CRITICAL' || threat === 'WARNING' ? '00:00:01' : zone.lastTriggerTime,
-            };
-          }));
-
-          // Dynamic Objects movement in camera
-          setDetectedObjects(prev => prev.map(obj => {
-            let newDist = obj.distance;
-            if (obj.type === 'VEHICLE') {
-              newDist = Math.max(3.2, Number((obj.distance + (Math.random() * 0.8 - 0.4)).toFixed(1)));
-            } else if (obj.type === 'PEDESTRIAN') {
-              newDist = Math.max(2.5, Number((obj.distance + (Math.random() * 0.4 - 0.2)).toFixed(1)));
-            }
-            return {
-              ...obj,
-              distance: newDist,
-              confidence: Math.min(99, Math.max(82, Math.round(obj.confidence + (Math.random() * 2 - 1)))),
-            };
-          }));
-        }
-
-        // FCW and AEB threat logic evaluation if not in real 3D sim override
-        if (!isSimActive) {
-          if (st.lidarDistance < st.settings.aebThresholdMeters || (st.hydroplaningRisk === 'HIGH' && st.lidarDistance < 3.5)) {
-            if (!st.aebActive) {
-              setAebActive(true);
-              setFcwState('FCW: CRITICAL COLLISION ALERT (AEB ENGAGED)');
-              setServoAngle(90);
-              
-              const now = Date.now();
-              if (now - lastAlarmTimeRef.current > 3500) {
-                lastAlarmTimeRef.current = now;
-                audioSynth.playEmergencyAlarm();
-                if (st.settings.voiceAlertsEnabled) {
-                  audioSynth.speakAlert('Warning: Critical Distance! Emergency Brake Applied!');
-                }
-              }
-
-              if (now - lastHazardAckRef.current > 8000) {
-                setCriticalHazardModal({
-                  isOpen: true,
-                  reason: st.hydroplaningRisk === 'HIGH' ? 'HYDROPLANING SEVERE LOSS OF TRACTION' : 'PROXIMITY THREAT BELOW CRITICAL THRESHOLD',
-                  minDistance: st.lidarDistance,
-                  severity: 'CRITICAL',
-                });
-              }
-
-              addEventLog({
-                timestamp: new Date().toLocaleTimeString(),
-                severity: 'CRITICAL',
-                category: 'AEB',
-                message: `CRITICAL THREAT: Forward obstacle at ${st.lidarDistance}m! Automated emergency braking engaged.`,
-                metricValue: `Distance: ${st.lidarDistance}m | Threshold: ${st.settings.aebThresholdMeters}m`
-              });
-            }
-          } else if (st.lidarDistance < 3.8) {
-            setFcwState('FCW: WARNING - DISTANCE CLOSING');
-          } else if (st.lidarDistance < 6.5) {
-            setFcwState('FCW: CAUTION - MONITOR TRAFFIC');
-          } else {
-            setFcwState('FCW: SYSTEM NOMINAL');
-          }
-        }
-
+      if (!killSwitchActive && !isSimRunning && mode === 'OFFLINE') {
+        setSpeed(0);
+        setGear('P');
+        setSteerAngle(0);
+        setServoAngle(0);
+        setFcwState('FCW: SIMULATION PAUSED');
+      }
         // Global Vehicle Health Score computation
         const healthPenalties = (st.aebActive ? 15 : 0) + (st.fogLevel > 3 ? 5 : 0) + (st.rainLevel > 3 ? 5 : 0) + (st.cpuTemp > 65 ? 8 : 0);
         setHealthScore(Math.max(65, 100 - healthPenalties));
@@ -918,7 +996,6 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           const updated = [...prev, newPt];
           return updated.length > 50 ? updated.slice(updated.length - 50) : updated;
         });
-      }
     }, 1000);
 
     return () => clearInterval(interval);
@@ -981,6 +1058,7 @@ export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         isSimRunning,
         toggleSimRunning,
         simulationLinked,
+        hardwareLinked,
 
         cpuTemp,
         cpuLoad,

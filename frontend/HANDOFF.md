@@ -11,7 +11,7 @@ This document explains how the React dashboard is organized, where state lives, 
 - **Routing:** no router. `activeTab` in `TelemetryContext` selects one of six views.
 - **Primary state:** a single context, `TelemetryContext`, owns telemetry, settings, history, logs, modals and audio.
 - **Simulation:** an iframe (`public/assets/simulation/adas-world.html`) runs a Three.js world and streams telemetry over `BroadcastChannel`.
-- **Backend calls:** only two — `POST /api/daylight-mode` and `POST /api/simulation/state`. In DEMO mode, all live values come from the 3D simulation; PI 5 mode uses the local fallback and OFF freezes updates.
+- **Backend calls:** two unconditional — `POST /api/daylight-mode` and `POST /api/simulation/state`. PI 5 mode additionally polls `GET /api/telemetry` every second as its source of truth; DEMO values come from the recorded dataset, OFF values from the 3D simulation.
 
 ```
 main.tsx
@@ -36,19 +36,19 @@ main.tsx
 
 | State | Owner | Notes |
 | --- | --- | --- |
-| Data stream mode | `TelemetryContext` | `DEMO` (`SIMULATION`) lets the 3D world own the dashboard; `PI 5` and `OFF` do not |
-| Vehicle physics, collisions, LiDAR rays | Simulator (`adas-world.html`) | Broadcast at ~10 Hz; accepted only in DEMO |
-| Speed, steering, gear, heading, range | `TelemetryContext` | Written by `applySimFrame` (DEMO) or the fallback loop |
-| 8 proximity zones | `TelemetryContext` | Derived from simulator `sectors` in DEMO, mock otherwise |
+| Data stream mode | `TelemetryContext` | `DEMO` (`SIMULATION`) replays the recorded dataset; `OFF` (`OFFLINE`) lets the 3D world own the dashboard; `PI 5` (`ONLINE_PI5`) reads the Pi 5 node API |
+| Vehicle physics, collisions, LiDAR rays | Simulator (`adas-world.html`) | Broadcast at ~10 Hz; accepted only in OFF |
+| Speed, steering, gear, heading, range | `TelemetryContext` | Written by `applyTelemetryFrame` (DEMO dataset / OFF 3D feed) or `applyPiSnapshot` (PI 5) |
+| 8 proximity zones | `TelemetryContext` | Derived from `sectors` in DEMO/OFF; in PI 5 only zone 1 follows hardware LiDAR |
 | Weather sliders | `TelemetryContext` (site authoritative) | Persisted in `localStorage` |
-| Night mode | `TelemetryContext` (site authoritative) | Simulator can echo a toggle back |
-| AEB / FCW / servo | Simulator, with site override | Manual AEB sends a control message |
+| Night mode | `TelemetryContext` (site authoritative) | Simulator can echo a toggle back (OFF mode) |
+| AEB / FCW / servo | Active source, with site override | Manual AEB sends a control message |
 | Kill switch | `TelemetryContext` → simulator | Site freezes telemetry while active |
-| Pi 5 hardware metrics | `TelemetryContext` | Locally modelled, weather-aware |
-| History | `TelemetryContext` | 50 client points, appended every 1 s |
+| Pi 5 hardware metrics | Dataset / Pi 5 node API | DEMO carries recorded node metrics; PI 5 reads them live; OFF uses the 3D feed |
+| History | `TelemetryContext` | 50 client points, appended every 1 s when a source is live |
 | Event logs | `TelemetryContext` | Newest first, capped at 100 |
 | Settings | `TelemetryContext` | Pushed to simulator via `config` |
-| Backend snapshot/history/logs | `backend/telemetryService.ts` | Independent REST feed, not the UI source |
+| Backend snapshot/history/logs | `backend/telemetryService.ts` | Independent REST feed; drives the UI only in PI 5 mode |
 
 ---
 
@@ -121,14 +121,15 @@ import { useTelemetry } from '../context/TelemetryContext';
 
 | Key | Type | Notes |
 | --- | --- | --- |
-| `isSimRunning` | boolean | Site pause state |
+| `isSimRunning` | boolean | Pause state (3D sim / dataset replay) |
 | `toggleSimRunning` | `() => void` | Pushes pause + backend state |
-| `simulationLinked` | boolean | Live frames received in last 2.5 s |
-| `cpuTemp`, `cpuLoad`, `ramUsage` | number | Pi 5 stats |
-| `latencyMs`, `packetDeliveryRate` | number | Pi 5 stats |
-| `uptimeSeconds`, `canBusLoad` | number | Pi 5 stats |
-| `imu` | `{ ax, ay, az, gx, gy, gz }` | From simulator |
-| `gps` | `{ lat, lng, satellites, alt, fix }` | From simulator |
+| `simulationLinked` | boolean | 3D frames received in last 2.5 s (OFF mode) |
+| `hardwareLinked` | boolean | `GET /api/telemetry` answered successfully (PI 5 mode); false means frozen |
+| `cpuTemp`, `cpuLoad`, `ramUsage` | number | From active source |
+| `latencyMs`, `packetDeliveryRate` | number | From active source |
+| `uptimeSeconds`, `canBusLoad` | number | From active source |
+| `imu` | `{ ax, ay, az, gx, gy, gz }` | From active source |
+| `gps` | `{ lat, lng, satellites, alt, fix }` | From active source |
 
 ### Controls, history, logs
 
@@ -213,7 +214,7 @@ On iframe load, it re-sends config, weather, night, camera and pause state at 25
 Control messages from the wrapper include `target: instance`. Simulator messages include `instance`; the context uses this to ignore stale or competing frames:
 
 ```ts
-if (connectionModeRef.current !== 'SIMULATION') return; // DEMO only
+if (connectionModeRef.current !== 'OFFLINE') return; // 3D world only in OFF
 if (d.instance === 'modal' && !modalOpenRef.current) return;
 if (d.instance === 'embedded' && modalOpenRef.current) return;
 ```
@@ -222,38 +223,46 @@ Effectively:
 
 | Mode | Telemetry source | Simulator panel |
 | --- | --- | --- |
-| `SIMULATION` (DEMO) | 3D world, falling back to mock if stale | `LIVE FEED` / `PAUSED` / `CONNECTING` |
-| `ONLINE_PI5` (PI 5) | Local fallback loop | `VIEW ONLY` |
-| `OFFLINE` (OFF) | No updates; last values freeze | `VIEW ONLY` |
+| `SIMULATION` (DEMO) | Recorded dataset (`/assets/demo-telemetry.json`) replayed on a loop | `VIEW ONLY` |
+| `ONLINE_PI5` (PI 5) | Pi 5 node hardware API (`GET /api/telemetry`, polled 1 Hz) | `VIEW ONLY` |
+| `OFFLINE` (OFF) | 3D world; dashboard freezes if stale | `LIVE FEED` / `PAUSED` / `CONNECTING` |
+
+DEMO is the default. The simulator panel is view-only outside OFF, but the same iframe is still mounted (Command Center stays mounted for that reason).
+
+### Mode-specific effects in `TelemetryContext`
+
+Three effects implement the sources:
+
+1. **DEMO replay** — active only in `SIMULATION` mode. Fetches `/assets/demo-telemetry.json` once (cached for the session), then applies a frame every 500 ms through `applyTelemetryFrame`. Pausing via `toggleSimRunning` halts the replay. If the dataset fails to load, a warning is logged and the dashboard stays frozen.
+2. **PI 5 poll** — active only in `ONLINE_PI5` mode. Polls `GET /api/telemetry` every second. On success, `hardwareLinked` becomes `true` and `applyPiSnapshot` maps the flat snapshot (scalars + forward LiDAR → zone 1 + AEB latch) onto state. On failure, `hardwareLinked` becomes `false` and nothing else happens.
+3. **OFF link watchdog** — the 1 Hz tick marks the 3D link stale when frames older than 2.5 s are observed and reminds that only OFF accepts frames.
 
 ### Frame application
 
-`applySimFrame(d)`:
+`applySimFrame(d)` (3D world, OFF mode):
 
-1. Aborts unless `connectionMode` is `SIMULATION` (DEMO).
+1. Aborts unless `connectionMode` is `OFFLINE`.
 2. Marks the link live and updates `lastSimMessageTimeRef`.
 3. Aborts if the kill switch is engaged (link stays live, values freeze).
 4. Clamps speed/steer/heading and writes them.
 5. Maps `sectors` into the 8 `proximityZones`, deriving threat levels from each zone's max range.
 6. Sanitises the detection list (type, confidence, position, size, velocity) and writes up to 8 objects.
-7. Writes AEB, FCW, servo, glare, AGS, IMU and GPS.
+7. Writes AEB, FCW, servo, glare, AGS, IMU, GPS and node metrics (FPS/latency/CAN/CPU/SNR).
 8. Derives LKA/ACC from settings and current steering/speed.
 9. Announces automatic AEB transitions with an alarm, optional voice alert and an event log (rate-limited to one every 3 s).
 
-### Stale-link fallback
+The DEMO dataset replay calls the same application logic through `applyTelemetryFrame` (steps 4–9), while the PI 5 poll calls `applyPiSnapshot`, which writes only the fields the hardware reports.
+
+### Frozen when source is absent
 
 A 1 Hz interval in the context does the following:
 
-- increments uptime;
-- tracks the live link only in DEMO mode;
-- marks `simulationLinked` false when the mode is not DEMO or frames are older than 2.5 s;
-- runs the mock cruise loop whenever the 3D world is not actively driving (PI 5, or a stale DEMO link);
-- recomputes LiDAR SNR/signal, FPS, latency, CAN load, CPU/RAM, health and history;
-- runs mock AEB/FCW logic and hazard modal triggers when the simulation is not driving.
+- increments uptime **when the selected source is live**;
+- tracks the live link only in OFF mode;
+- returns early — no values change — when the source is unavailable (`ONLINE_PI5` without a responding Pi 5 node, or `OFFLINE` with frames older than 2.5 s);
+- otherwise advances uptime, updates `simulationLinked`, zeroes speed/gear/servo when `isSimRunning` is false in OFF mode, recomputes health and appends history.
 
-In `OFFLINE` mode the interval returns early, so values and uptime freeze. Switching out of DEMO also resets `lastSimMessageTimeRef` and clears the AEB transition latch so the fallback takes over immediately.
-
-This fallback is why the dashboard remains usable with the iframe blocked, hidden, or deliberately set to view-only.
+There is no mock cruise loop. The dashboard never invents telemetry.
 
 ### Weather/night authority
 
@@ -261,8 +270,8 @@ The dashboard owns the controls:
 
 - `setRainLevel` / `setFogLevel` update state, `localStorage`, and broadcast on both weather and control channels.
 - `toggleNightMode` computes the next value **outside** the state updater (StrictMode safety) and sends `night`.
-- A toggle inside the iframe sends `nightState`; in DEMO mode the context applies it without echoing another control message.
-- On arrival, weather is also received on `adas_weather_channel`. In DEMO mode the context listens and updates display state; in PI 5/OFF modes simulator echoes are ignored.
+- A toggle inside the iframe sends `nightState`; in OFF mode the context applies it without echoing another control message.
+- On arrival, weather is also received on `adas_weather_channel`. In OFF mode the context listens and updates display state; in DEMO and PI 5 modes simulator echoes are ignored.
 
 ### Modal behavior
 
@@ -326,9 +335,10 @@ Clear these keys when testing to start from a clean state.
 
 1. Emit the field in `adas-world.html` inside `processADASInference` (the telemetry `postMessage`).
 2. Add it to the context interface and state in `TelemetryContext.tsx`.
-3. Write it in `applySimFrame`, with a type guard and clamp.
-4. Include it in `telemetryStateRef.current` so history/fallback can use it.
-5. Consume it in the relevant view.
+3. Write it in `applyTelemetryFrame`, with a type guard and clamp (it feeds both the DEMO dataset and OFF 3D frames).
+4. Include it in `telemetryStateRef.current` so history can use it.
+5. If the PI 5 node also reports it, add it to `applyPiSnapshot` as well.
+6. Consume it in the relevant view.
 
 ### Add a control
 
@@ -347,7 +357,7 @@ Clear these keys when testing to start from a clean state.
 
 - Site setting: `settings.aebThresholdMeters` in `ThreatActuationView`.
 - Simulator threshold: pushed as `config.aebThreshold`; the simulator clamps 0.5–30 m.
-- Site fallback logic uses the same setting only when no live simulation is present.
+- Site AEB evaluation lives in the active source (dataset/sim carry it); manual AEB works in every mode.
 - The simulator's default threshold is 2.0 m; the site default is 1.8 m, and syncing the site config applies the site value.
 
 ---
@@ -356,8 +366,9 @@ Clear these keys when testing to start from a clean state.
 
 1. `npm run lint` — TypeScript clean.
 2. `npm run build` — production bundle builds.
-3. Command Center — `LIVE FEED`, moving speed and range (DEMO default).
-4. Data stream modes — `PI 5` shows `VIEW ONLY` and stops sim control; `DEMO` reconnects; `OFF` freezes values.
+3. Command Center in DEMO — `VIEW ONLY` chip; speed and front range follow the dataset (it loops, so they keep changing).
+4. Data stream modes — `DEMO` replays the dataset; `PI 5` polls `/api/telemetry` and freezes when it fails (chip `PI 5 NOT CONNECTED · FROZEN`); `OFF` shows `LIVE FEED` and the 3D world drives; switching to `OFF` without a responding 3D world freezes values (`CONNECTING`).
+   Items 5–17 assume DATA STREAM MODE is **OFF** unless stated. DEMO mode instead replays the recorded dataset and cannot be driven by inputs.
 5. Drive pad — accelerate, steer, reverse, brake.
 6. Keyboard inside iframe — `W/A/S/D`, arrows, `Space`, `1/2` camera.
 7. Pause/resume — speed 0 and `FCW: SIMULATION PAUSED` while paused.
@@ -383,20 +394,21 @@ Clear these keys when testing to start from a clean state.
 - **Road-vision console is dark by design:** the video perception panel keeps its own dark chrome in both themes, like a camera wall. The surrounding card adapts to the PRAVAH theme.
 - **21 MB sample video:** `demo.mp4` is large by design. If you deploy over a slow link, replace it with a smaller clip or host it behind a CDN; the component only needs `videoSrcUrl` to change.
 - **Vision engine is independent:** it does not read or write `TelemetryContext`. Do not wire it to `detectedObjects` — it has its own optical-flow pipeline.
-- **Mode gating:** `applySimFrame` and the simulator weather/night echoes return early unless `connectionMode === 'SIMULATION'`. Keep this guard; otherwise PI 5 and OFF modes are silently overwritten by the 3D world. The mode is read through `connectionModeRef` so the channel listener does not need re-subscribing.
-- **Leaving DEMO:** an effect resets `lastSimMessageTimeRef` and `prevAebRef` when the mode changes away from DEMO, so the fallback loop and AEB announcements take over immediately.
-- **Simulator panel status:** `AdasWorldSimulation` shows `VIEW ONLY` outside DEMO, regardless of whether frames are arriving, and `LIVE FEED`/`PAUSED`/`CONNECTING` inside DEMO.
+- **Mode gating:** the BroadcastChannel handler and `applySimFrame` return early unless `connectionMode === 'OFFLINE'`; the simulator weather/night echoes are equally OFF-only. Keep this guard or PI 5 and DEMO get overwritten by the 3D world. Mode is read through `connectionModeRef` so the channel listener does not need re-subscribing.
+- **No fallback loop:** there is deliberately no mock telemetry source. In DEMO the dataset must load (see fetch errors in the console); in OFF the 3D world must stream; in PI 5 the node must answer `/api/telemetry` — otherwise the dashboard is frozen and that is correct behaviour.
+- **Leaving OFF:** an effect resets `lastSimMessageTimeRef` and `prevAebRef` when the mode changes away from OFF, so stale frames cannot leak across modes.
+- **Simulator panel status:** `AdasWorldSimulation` shows `VIEW ONLY` outside OFF mode, regardless of whether frames are arriving, and `LIVE FEED`/`PAUSED`/`CONNECTING` inside OFF.
 - **Two instances:** always include `target`/`instance`; otherwise the embedded and modal engines will both react and telemetry will oscillate.
-- **Modal gating:** the embedded instance is paused while the modal is open by design. If you change `syncSimulator`, preserve this rule. This gating only affects which instance drives telemetry while DEMO is selected.
+- **Modal gating:** the embedded instance is paused while the modal is open by design. If you change `syncSimulator`, preserve this rule. This gating only affects which instance drives telemetry while OFF is selected.
 - **Site vs. simulator defaults:** site AEB default is 1.8 m; simulator default is 2.0 m. The site config wins after sync.
 - **Forward range clamp:** the site clamps forward LiDAR to 12 m for display while the simulator ranges up to 50 m.
-- **Weather echo loop:** both site and simulator post weather. The site only updates local display state on echo in DEMO and does not re-broadcast on every echo, which avoids feedback loops. Keep it that way.
-- **`applySimFrame` is memoised** with `addEventLog`; it reads mutable state through refs (`connectionModeRef`, `killSwitchRef`, `modalOpenRef`, `settingsRef`, `prevAebRef`). Use refs instead of adding dependencies that would rebuild the channel listener.
-- **Backend is not the live feed:** `/api/telemetry` is a separate 1 Hz engine. Do not wire views to it expecting the 3D world's values.
+- **Weather echo loop:** both site and simulator post weather. The site only updates local display state on echo in OFF mode and does not re-broadcast on every echo, which avoids feedback loops. Keep it that way.
+- **`applyTelemetryFrame` is memoised** with `addEventLog`; it reads mutable state through refs (`killSwitchRef`, `modalOpenRef`, `settingsRef`, `prevAebRef`). Use refs instead of adding dependencies that would rebuild the channel listener.
+- **Backend is the live feed only in PI 5:** `/api/telemetry` drives the dashboard while `ONLINE_PI5` is selected. In DEMO and OFF it is only the headless REST surface. Its AEB state may be active because the backend engine simulates braking — the dashboard intentionally mirrors it.
 - **`CommandCenterView` is always mounted:** avoid expensive duplicate subscriptions inside it; it runs even when hidden.
 - **Web Audio:** audio only starts after a user gesture; test accordingly.
 - **localStorage weather:** tests can inherit previous rain/fog values. Clear `adas_rain` / `adas_fog` for reproducible runs.
-- **Browser support:** `BroadcastChannel` is required. Very old browsers fall back to the mock loop, not a live sim.
+- **Browser support:** `BroadcastChannel` is required for OFF mode; DEMO uses `fetch` for its dataset. Very old browsers will see the dashboard stay frozen except for manual controls.
 
 ---
 
